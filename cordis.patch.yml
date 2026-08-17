@@ -1,3 +1,9 @@
+# Self-contained drop-in: this bundle registers the enhanced web tools AND
+# disables the stock `tool-web` row in one install. The last entry is a
+# top-level id-targeted row (not an `insert`), so the loader merges it onto
+# the existing `tool-web` entry and tears it down — installing this package is
+# the whole swap for CLI profiles; preset-realm Web surfaces still disable
+# their own `tool-web` row.
 - insert:
     - id: tool-web-enhanced
       name: dsh-tool-web-enhanced
@@ -6,3 +12,6 @@
         fetch: true
         searxngUrl: 'http://127.0.0.1:8080'
         searxngEnabled: true
+
+- id: tool-web
+  disabled: true
