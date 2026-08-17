@@ -282,7 +282,6 @@ export class RagEngine {
   private readonly storePath: string;
   private readonly embedder: Embedder;
   private readonly logger: (msg: string) => void;
-  private nextId = 0n;
 
   constructor(opts: {
     storePath: string;
@@ -359,6 +358,18 @@ export class RagEngine {
           `vector FLOAT[${dims}], +chunk_text TEXT)`,
       );
 
+      // The `chunks` table persists between runs, so continue the vec0 `rowid`
+      // sequence from its current maximum rather than restarting at 0 each
+      // pass (which would reuse live rowids and trip the UNIQUE primary-key
+      // constraint). One monotonic counter spans the whole pass. After a
+      // dimension-change DROP + rebuild the table is empty, so MAX(rowid) is 0
+      // and the sequence correctly restarts at 1. Read on this same connection
+      // after the lazy CREATE so the table is guaranteed to exist.
+      const maxRowidRow = db
+        .prepare("SELECT COALESCE(MAX(rowid), 0) AS max_rowid FROM chunks")
+        .get() as { max_rowid: number | bigint };
+      let nextRowid = BigInt(maxRowidRow.max_rowid) + 1n;
+
       const counts: Record<string, number> = {};
       const upsertFile = db.prepare(
         "INSERT INTO files(db_name, path, mtime) VALUES (?, ?, ?) " +
@@ -366,6 +377,11 @@ export class RagEngine {
       );
       const existingMeta = db.prepare(
         "SELECT path FROM files WHERE db_name = ?",
+      );
+      // A prepared delete used both to clean re-insert a changed/new file and
+      // to drop rows for files removed from disk.
+      const deleteChunk = db.prepare(
+        "DELETE FROM chunks WHERE db_name = ? AND source_path = ?",
       );
 
       for (const database of databases) {
@@ -396,14 +412,14 @@ export class RagEngine {
             );
             db.exec("BEGIN");
             try {
-              db.exec(
-                "DELETE FROM chunks WHERE db_name = ? AND source_path = ?",
-              );
+              // Clean re-insert: remove this file's prior chunks (bound params,
+              // unlike `db.exec`) before inserting the freshly chunked ones.
+              deleteChunk.run(database.name, file.path);
               for (let i = 0; i < chunks.length; i++) {
                 // Track a monotonically increasing rowid as a BigInt — vec0
                 // requires integer primary keys and better-sqlite3 binds JS
                 // numbers as REAL, so a BigInt is mandatory.
-                const rowid = this.nextId++;
+                const rowid = nextRowid++;
                 insertChunk.run(
                   rowid,
                   database.name,
@@ -423,9 +439,6 @@ export class RagEngine {
         }
 
         // Remove rows for paths that no longer exist on disk.
-        const deleteChunk = db.prepare(
-          "DELETE FROM chunks WHERE db_name = ? AND source_path = ?",
-        );
         const deleteFile = db.prepare(
           "DELETE FROM files WHERE db_name = ? AND path = ?",
         );

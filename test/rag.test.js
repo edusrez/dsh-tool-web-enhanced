@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -299,4 +299,63 @@ test("RagEngine.query awaits ensureIndex when the store is empty", async (t) => 
   assert.equal(sections.length, 1, "a non-empty section comes back for the db");
   assert.ok(sections[0].results.length > 0, "results returned for the indexed db");
   assert.ok(batchEmbedCalls > 0, "query() embedded chunks (ran ensureIndex itself)");
+});
+
+test("RagEngine re-indexes a changed file without rowid collision", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const filePath = join(docs, "one.md");
+  writeFileSync(
+    filePath,
+    "## Apples\nApples are a crisp and sweet fruit that grows on trees.\n",
+  );
+
+  const storePath = join(dir, "store.sqlite");
+  const engine = new RagEngine({ storePath, embedder: makeFakeEmbedder(32) });
+  const databases = [{ name: "docs", path: docs, topK: 2 }];
+
+  await engine.ensureIndex(databases);
+
+  // Change the file and force a distinct mtime so the store detects the change.
+  appendFileSync(
+    filePath,
+    "\n## Bananas\nBananas are a soft and sweet fruit that grows in bunches.\n",
+  );
+  utimesSync(filePath, new Date(), new Date(Date.now() + 5000));
+
+  // Re-index must NOT throw a UNIQUE primary-key violation on the persisted
+  // chunks table: rowids continue from the stored max and are never reused.
+  await engine.ensureIndex(databases);
+
+  const sections = await engine.query("apples bananas sweet fruit", databases);
+  assert.equal(sections.length, 1, "one non-empty section after re-index");
+  assert.ok(sections[0].results.length > 0, "results returned after re-index");
+  assert.ok(
+    sections[0].results.some((r) => r.title.includes("Bananas")),
+    "the newly added section is queryable after re-index",
+  );
+});
+
+test("RagEngine unchanged file re-index does not collide", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(
+    join(docs, "one.md"),
+    "## Apples\nApples are a crisp and sweet fruit that grows on trees.\n",
+  );
+
+  const storePath = join(dir, "store.sqlite");
+  const engine = new RagEngine({ storePath, embedder: makeFakeEmbedder(32) });
+  const databases = [{ name: "docs", path: docs, topK: 2 }];
+
+  const first = await engine.ensureIndex(databases);
+  assert.ok(first.docs > 0, `indexed chunks: ${JSON.stringify(first)}`);
+  const firstCount = first.docs;
+
+  // Identical, unchanged file on the second run: no inserts happen, so no
+  // rowid reuse, no UNIQUE error, and the chunk count stays stable.
+  const second = await engine.ensureIndex(databases);
+  assert.equal(second.docs, firstCount, "chunk counts stable across unchanged re-index");
 });

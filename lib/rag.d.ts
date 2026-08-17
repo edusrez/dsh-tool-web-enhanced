@@ -75,7 +75,6 @@ export declare class RagEngine {
     private readonly storePath;
     private readonly embedder;
     private readonly logger;
-    private nextId;
     constructor(opts: {
         storePath: string;
         embedder: Embedder;

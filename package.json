@@ -1,6 +1,6 @@
 {
   "name": "dsh-tool-web-enhanced",
-  "version": "0.2.0-rc.3",
+  "version": "0.2.0-rc.4",
   "description": "Drop-in dsh-tool-web enhancement: optional topic filter plus a SearXNG result section in web_search.",
   "keywords": [
     "dsh",
