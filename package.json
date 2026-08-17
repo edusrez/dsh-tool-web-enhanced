@@ -1,7 +1,26 @@
 {
   "name": "dsh-tool-web-enhanced",
   "version": "0.1.0-rc.1",
-  "description": "Drop-in enhancement of @deepseek-ai/dsh-tool-web: adds a `topic` vertical filter and an optional SearXNG result section to web_search, leaving web_fetch untouched.",
+  "description": "Drop-in dsh-tool-web enhancement: optional topic filter plus a SearXNG result section in web_search.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "web-search",
+    "searxng",
+    "search",
+    "plugin",
+    "agent-tools",
+    "cordis"
+  ],
+  "homepage": "https://github.com/edusrez/dsh-tool-web-enhanced#readme",
+  "bugs": {
+    "url": "https://github.com/edusrez/dsh-tool-web-enhanced/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edusrez/dsh-tool-web-enhanced.git"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

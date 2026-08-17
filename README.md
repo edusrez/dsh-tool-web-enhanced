@@ -1,30 +1,38 @@
 # dsh-tool-web-enhanced
 
-A drop-in enhancement of
-[`@deepseek-ai/dsh-tool-web`](https://www.npmjs.com/package/@deepseek-ai/dsh-tool-web)
-that **only enhances `web_search`**. `web_fetch` is registered identically to
-stock (reused verbatim), so it is byte-for-byte unchanged.
+A drop-in enhancement of DeepSeek Harness' web-search tool: adds an optional `topic` vertical filter and a second SearXNG results section to `web_search` — everything else stays byte-for-byte stock.
 
-The enhancement adds two things to `web_search`:
+[![npm](https://img.shields.io/npm/v/dsh-tool-web-enhanced?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-tool-web-enhanced)
+[![downloads](https://img.shields.io/npm/dw/dsh-tool-web-enhanced?style=flat-square)](https://www.npmjs.com/package/dsh-tool-web-enhanced)
+[![license](https://img.shields.io/npm/l/dsh-tool-web-enhanced?style=flat-square)](LICENSE)
+[![stars](https://img.shields.io/github/stars/edusrez/dsh-tool-web-enhanced?style=flat-square)](https://github.com/edusrez/dsh-tool-web-enhanced)
+[![last commit](https://img.shields.io/github/last-commit/edusrez/dsh-tool-web-enhanced?style=flat-square)](https://github.com/edusrez/dsh-tool-web-enhanced)
 
-1. **An optional `topic` parameter** — a vertical filter mapped to SearXNG
-   `categories` (see the table below). Native DeepSeek results are unaffected.
-2. **A second results section (`SearXNG results`)** — an optional local
-   SearXNG JSON-API lookup appended under the native results.
+## Features
 
-When SearXNG is absent, disabled, or unreachable, `web_search` degrades
-**silently** to exactly the stock behaviour and output shape — no thrown
-error, native-only results.
+- **Optional `topic` parameter** — `web_search` accepts an optional `topic`
+  argument mapped to SearXNG `categories`. Native DeepSeek results are not
+  affected.
+- **Second results section** — a `SearXNG results` section is appended under
+  the native results, using the same source-item shape as the stock `sources`.
+- **Silent degradation** — when SearXNG is absent, disabled
+  (`searxngEnabled: false`), or unreachable, `web_search` produces exactly
+  the stock behaviour and output shape, without throwing.
+- **Self-contained drop-in** — installing the bundle registers the enhanced
+  tools and disables the stock `tool-web` row automatically (see
+  [Install / Quickstart](#install--quickstart)).
 
-## Install
+## Install / Quickstart
 
 ```bash
 npm install dsh-tool-web-enhanced
 ```
 
 This is a DSH bundle: `package.json` carries `dsh.bundle.patch =
-./cordis.patch.yml`, which inserts the plugin row. The profile/preset swaps
-`tool-web` → `tool-web-enhanced` so the enhanced tool replaces the stock one.
+./cordis.patch.yml`, which inserts the enhanced plugin row and disables the
+stock `tool-web` row in one install. For CLI profiles, installing the package
+is the whole swap — no manual profile edit required. For preset-realm Web
+surfaces, the preset still disables its own `tool-web` row.
 
 ```yaml
 # cordis.patch.yml (bundled with this package)
@@ -36,6 +44,9 @@ This is a DSH bundle: `package.json` carries `dsh.bundle.patch =
         fetch: true
         searxngUrl: 'http://127.0.0.1:8080'
         searxngEnabled: true
+
+- id: tool-web
+  disabled: true
 ```
 
 ## Connecting SearXNG
@@ -87,10 +98,14 @@ default `general`).
 | `map`          | `map`                |
 | `music`        | `music`              |
 
-## Config keys
+## Configuration reference
 
 Existing stock keys keep identical names and defaults; SearXNG keys are
 additive.
+
+> The stock `fetch*` keys are kept ONLY for drop-in config compatibility —
+> `web_fetch` is NOT modified by this plugin (it is re-registered verbatim
+> from the stock package). Setting them has no enhanced behaviour.
 
 | Key                   | Type    | Default                  | Description |
 | --------------------- | ------- | ------------------------ | ----------- |
@@ -129,6 +144,21 @@ additive.
 text is the stock `formatSearchOutput(value)` result followed by a
 `## SearXNG results` markdown block (same `- [title](url) — snippet` shape),
 omitted when there are no SearXNG sources.
+
+## Development
+
+- `npm run build` — compiles `src/` to `lib/` with `tsc` (NodeNext).
+- `node --test` — runs the unit tests in `test/` against the built `lib/`.
+- Smoke-test in a DSH profile — install the local checkout into an isolated
+  development profile, then inspect the composed configuration:
+
+  ```bash
+  dsh plugin --profile dev add /path/to/dsh-tool-web-enhanced
+  dsh --profile dev --dump-config
+  ```
+
+  The dumped tree must show the `tool-web-enhanced` row plus the disabled
+  `tool-web` row. Exercise `web_search` end-to-end in that profile afterward.
 
 ## License
 
