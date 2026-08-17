@@ -21,6 +21,9 @@ A drop-in enhancement of DeepSeek Harness' web-search tool: adds an optional `to
 - **Self-contained drop-in** — installing the bundle registers the enhanced
   tools and disables the stock `tool-web` row automatically (see
   [Install / Quickstart](#install--quickstart)).
+- **Optional RAG section** — an optional third RAG section, one
+  `## <name> (RAG)` block per configured local database, plus a `sources`
+  parameter to select any combination of native/SearXNG/RAG.
 
 ## Install / Quickstart
 
@@ -129,14 +132,15 @@ additive.
 ## Output shape
 
 `web_search` returns the stock canonical shape plus an optional
-`searxngSources` array:
+`searxngSources` array and an optional `rag` array:
 
 ```jsonc
 {
   "content": "...",            // optional native answer
   "sources": [ { "url": "...", "title": "...", "snippet": "...", "publishedAt": "..." } ],
   "truncated": false,
-  "searxngSources": [ { "url": "...", "title": "...", "snippet": "...", "publishedAt": "..." } ]
+  "searxngSources": [ { "url": "...", "title": "...", "snippet": "...", "publishedAt": "..." } ],
+  "rag": [ { "name": "...", "results": [ { "title": "...", "path": "...", "excerpt": "...", "score": 0.72 } ] } ]
 }
 ```
 
@@ -144,6 +148,57 @@ additive.
 text is the stock `formatSearchOutput(value)` result followed by a
 `## SearXNG results` markdown block (same `- [title](url) — snippet` shape),
 omitted when there are no SearXNG sources.
+
+## RAG
+
+The plugin can also augment `web_search` with a **local RAG section**: a
+`## <name> (RAG)` block per configured local Markdown database, retrieving the
+top-K most similar chunks to the query from a `better-sqlite3` + `sqlite-vec`
+store. Chunks are embedded with either DeepInfra (HTTP) or a local
+transformers.js ONNX model.
+
+### `sources` parameter
+
+`web_search` accepts an optional `sources` parameter — a comma-separated list
+selecting which result sections to include:
+
+| Value      | Section                          |
+| ---------- | -------------------------------- |
+| `native`   | DeepSeek native results.         |
+| `searxng`  | The SearXNG results section.     |
+| `rag`      | Local RAG database sections.     |
+
+The default is `all` (every available section). Any combination is allowed,
+e.g. `native,rag` or `searxng`.
+
+### `rag_index` tool
+
+When RAG is enabled and at least one database is configured, a `rag_index` tool
+is registered. It rebuilds the local RAG index for all configured databases and
+returns the number of chunks indexed per database. The index is also built
+automatically (async, non-blocking) on plugin startup.
+
+### RAG configuration
+
+| Key                              | Type   | Default                              | Description |
+| -------------------------------- | ------ | ------------------------------------ | ----------- |
+| `rag.enabled`                    | boolean| `true`                               | Enable the RAG section + `rag_index` tool. |
+| `rag.storePath`                  | string | `''` (auto)                          | SQLite store path; empty → `<DSH_HOME>/storages/rag/rag.db`. |
+| `rag.embeddings.provider`        | string | `auto`                               | `auto` / `deepinfra` / `local`. `auto` → deepinfra when a key is present, else local. |
+| `rag.embeddings.apiKeyEnv`       | string | `DEEPINFRA_TOKEN`                    | Env var name holding the DeepInfra key. |
+| `rag.embeddings.apiKey`          | string | `''`                                 | Literal DeepInfra key (wins over `apiKeyEnv`). |
+| `rag.embeddings.deepinfraModel`  | string | `BAAI/bge-m3`                        | DeepInfra embedding model. |
+| `rag.embeddings.deepinfraBaseURL`| string | `https://api.deepinfra.com/v1/openai`| DeepInfra OpenAI-compatible base URL. |
+| `rag.embeddings.localModel`      | string | `Xenova/bge-small-en-v1.5`           | Local transformers.js model. |
+| `rag.databases[].name`           | string | —                                    | Database (section) name. |
+| `rag.databases[].path`           | string | —                                    | Directory of Markdown files to index. |
+| `rag.databases[].topK`           | number | `5`                                  | Results returned per database. |
+
+> **Local embeddings** (the default when no key is configured) download a small
+> ONNX model (~34MB) on first use, via the optional
+> `@huggingface/transformers` dependency. The **DeepInfra** path uses
+> `DEEPINFRA_TOKEN` (or `rag.embeddings.apiKey`). RAG errors degrade silently
+> — the section is simply omitted from the output.
 
 ## Development
 

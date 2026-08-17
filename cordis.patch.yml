@@ -12,6 +12,17 @@
         fetch: true
         searxngUrl: 'http://127.0.0.1:8080'
         searxngEnabled: true
+        rag:
+          enabled: true
+          storePath: ''
+          embeddings:
+            provider: auto
+            apiKeyEnv: DEEPINFRA_TOKEN
+            apiKey: ''
+            deepinfraModel: BAAI/bge-m3
+            deepinfraBaseURL: https://api.deepinfra.com/v1/openai
+            localModel: Xenova/bge-small-en-v1.5
+          databases: []
 
 - id: tool-web
   disabled: true

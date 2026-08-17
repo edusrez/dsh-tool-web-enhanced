@@ -11,6 +11,8 @@ import {
   DEFAULT_FETCH_MAX_OUTPUT_CHARS,
 } from "@deepseek-ai/dsh-tool-web";
 
+import { RagEngine, parseSources, type RagSection } from "./rag.js";
+
 /**
  * `dsh-tool-web-enhanced` — a drop-in enhancement of
  * `@deepseek-ai/dsh-tool-web` that ONLY enhances `web_search`.
@@ -238,12 +240,13 @@ export async function fetchSearxng(
 // Two-section render
 // ---------------------------------------------------------------------------
 
-/** The canonical `web_search` output value (native + optional SearXNG section). */
+/** The canonical `web_search` output value (native + optional SearXNG + RAG sections). */
 export interface WebSearchEnhancedValue {
   content?: string;
   sources: SearxngSource[];
   truncated: boolean;
   searxngSources?: SearxngSource[];
+  rag?: RagSection[];
 }
 
 /**
@@ -276,6 +279,27 @@ export function formatSearxngOutput(sources: readonly SearxngSource[]): string {
 }
 
 /**
+ * Render the RAG sections: one `## <name> (RAG)` block per section, each
+ * result as `- **title** — path (score …)` with the excerpt on its own
+ * indented line.
+ *
+ * @param sections - the RAG sections (from {@link RagEngine.query}).
+ * @returns the combined markdown, or an empty string when there are none.
+ */
+export function formatRagOutput(sections: readonly RagSection[] | undefined): string {
+  if (sections === undefined || sections.length === 0) return "";
+  const blocks = sections.map((section) => {
+    const lines = section.results.map((r) => {
+      const head = `- **${r.title}** — ${r.path} (score ${r.score.toFixed(3)})`;
+      const excerpt = r.excerpt.trim();
+      return excerpt.length > 0 ? `${head}\n  ${excerpt}` : head;
+    });
+    return `## ${section.name} (RAG)\n${lines.join("\n")}`;
+  });
+  return blocks.join("\n\n");
+}
+
+/**
  * Render the complete enhanced output: the stock native block (via
  * {@link formatSearchOutput}) followed by the SearXNG block when present.
  *
@@ -285,8 +309,9 @@ export function formatSearxngOutput(sources: readonly SearxngSource[]): string {
 export function formatEnhancedSearchOutput(value: WebSearchEnhancedValue): string {
   const native = formatSearchOutput(value);
   const searxng = value.searxngSources !== undefined ? formatSearxngOutput(value.searxngSources) : "";
-  if (searxng.length === 0) return native;
-  return `${native}\n\n${searxng}`;
+  const rag = formatRagOutput(value.rag);
+  const parts = [native, searxng, rag].filter((p) => p.length > 0);
+  return parts.join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +331,23 @@ export const Config = z.object({
   fetchMaxOutputChars: z.number().default(DEFAULT_FETCH_MAX_OUTPUT_CHARS),
   searxngUrl: z.string().default(DEFAULT_SEARXNG_URL),
   searxngEnabled: z.boolean().default(true),
+  rag: z.object({
+    enabled: z.boolean().default(true),
+    storePath: z.string().default(''),
+    embeddings: z.object({
+      provider: z.union([z.const('auto'), z.const('deepinfra'), z.const('local')]).default('auto'),
+      apiKeyEnv: z.string().default('DEEPINFRA_TOKEN'),
+      apiKey: z.string().default(''),
+      deepinfraModel: z.string().default('BAAI/bge-m3'),
+      deepinfraBaseURL: z.string().default('https://api.deepinfra.com/v1/openai'),
+      localModel: z.string().default('Xenova/bge-small-en-v1.5'),
+    }).default({} as any),
+    databases: z.array(z.object({
+      name: z.string(),
+      path: z.string(),
+      topK: z.number().default(5),
+    })).default([]),
+  }).default({} as any),
 });
 
 /** The resolved plugin configuration shape (after schema defaults are applied). */
@@ -318,6 +360,19 @@ export interface EnhancedConfig {
   fetchMaxOutputChars: number;
   searxngUrl: string;
   searxngEnabled: boolean;
+  rag: {
+    enabled: boolean;
+    storePath: string;
+    embeddings: {
+      provider: 'auto' | 'deepinfra' | 'local';
+      apiKeyEnv: string;
+      apiKey: string;
+      deepinfraModel: string;
+      deepinfraBaseURL: string;
+      localModel: string;
+    };
+    databases: { name: string; path: string; topK: number }[];
+  };
 }
 
 /** Configured count and timeout caps must be positive integers. */
@@ -325,6 +380,132 @@ function assertPositiveInteger(label: string, value: number): void {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`tool-web-enhanced: ${label} must be a positive integer`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// RAG resolution + embedder factory
+// ---------------------------------------------------------------------------
+
+/** The resolved RAG config shape produced by {@link resolveRag}. */
+export interface ResolvedRag {
+  enabled: boolean;
+  storePath: string;
+  embeddings: {
+    provider: 'deepinfra' | 'local';
+    apiKeyEnv: string;
+    apiKey: string;
+    deepinfraModel: string;
+    deepinfraBaseURL: string;
+    localModel: string;
+  };
+  databases: { name: string; path: string; topK: number }[];
+}
+
+/**
+ * Resolve the raw RAG config into concrete values: default the store path,
+ * collapse the `auto` provider to a concrete `deepinfra`/`local` choice, and
+ * resolve the API key (literal wins, then the environment variable).
+ *
+ * @param rag - the raw `rag` config from the schema.
+ * @returns the resolved RAG configuration.
+ */
+export function resolveRag(rag: EnhancedConfig['rag']): ResolvedRag {
+  const storePath = rag.storePath.trim().length > 0
+    ? rag.storePath
+    : `${process.env.DSH_HOME ?? process.cwd()}/storages/rag/rag.db`;
+
+  const key = rag.embeddings.apiKey.trim().length > 0
+    ? rag.embeddings.apiKey
+    : (process.env[rag.embeddings.apiKeyEnv] ?? '');
+
+  const provider: 'deepinfra' | 'local' = rag.embeddings.provider === 'deepinfra'
+    ? 'deepinfra'
+    : rag.embeddings.provider === 'local'
+      ? 'local'
+      : key.length > 0
+        ? 'deepinfra'
+        : 'local';
+
+  return {
+    enabled: rag.enabled,
+    storePath,
+    embeddings: {
+      provider,
+      apiKeyEnv: rag.embeddings.apiKeyEnv,
+      apiKey: key,
+      deepinfraModel: rag.embeddings.deepinfraModel,
+      deepinfraBaseURL: rag.embeddings.deepinfraBaseURL,
+      localModel: rag.embeddings.localModel,
+    },
+    databases: rag.databases,
+  };
+}
+
+/** A cached local transformers.js feature-extraction pipeline, keyed by model. */
+let localPipelineCache: { model: string; pipeline: (text: string, opts: object) => Promise<{ data: Float32Array | number[] }> } | undefined;
+
+/**
+ * Build an {@link Embedder} for the resolved RAG embeddings config.
+ *
+ * `deepinfra`: POSTs a batch to `<deepinfraBaseURL>/embeddings` (OpenAI
+ * compatible) and returns `data[].embedding` in input order. `local`: lazily
+ * loads a `@huggingface/transformers` feature-extraction pipeline (singleton
+ * per model, `q8` quantization) and returns `Array.from(out.data)` for each
+ * input text.
+ *
+ * @param embeddings - the resolved embeddings config (concrete provider + key).
+ * @returns an async `(texts) => vectors` embedder.
+ */
+export function createEmbedder(embeddings: ResolvedRag['embeddings']): (texts: string[]) => Promise<number[][]> {
+  if (embeddings.provider === 'deepinfra') {
+    const baseURL = embeddings.deepinfraBaseURL.replace(/\/+$/, '');
+    return async (texts: string[]) => {
+      const response = await fetch(`${baseURL}/embeddings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${embeddings.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: embeddings.deepinfraModel,
+          input: texts,
+          encoding_format: 'float',
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`deepinfra embeddings request failed: ${response.status}`);
+      }
+      const body = (await response.json()) as { data?: { embedding?: number[] }[] };
+      if (!Array.isArray(body.data)) {
+        throw new Error('deepinfra embeddings response missing data array');
+      }
+      return body.data.map((d) => d.embedding ?? []);
+    };
+  }
+
+  // local
+  return async (texts: string[]) => {
+    let pipeline: (text: string, opts: object) => Promise<{ data: Float32Array | number[] }>;
+    try {
+      if (localPipelineCache === undefined || localPipelineCache.model !== embeddings.localModel) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mod: any = await import('@huggingface/transformers');
+        const p = await mod.pipeline('feature-extraction', embeddings.localModel, { dtype: 'q8' });
+        localPipelineCache = { model: embeddings.localModel, pipeline: p };
+      }
+      pipeline = localPipelineCache.pipeline;
+    } catch (err) {
+      throw new Error(
+        `local embeddings need the optional dependency @huggingface/transformers — npm i @huggingface/transformers (${(err as Error).message})`,
+      );
+    }
+    const vectors: number[][] = [];
+    for (const text of texts) {
+      const out = await pipeline(text, { pooling: 'mean', normalize: true });
+      vectors.push(Array.from(out.data));
+    }
+    return vectors;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +528,7 @@ function assertPositiveInteger(label: string, value: number): void {
  * @param timeoutMs - the cooperative tool-call budget (ms).
  * @param fetchEnabled - whether `web_fetch` is also exposed (drives guidance).
  * @param searxng - resolved SearXNG options ({ enabled, url }).
+ * @param rag - resolved RAG options ({ active, engine, databases }).
  */
 function applyEnhancedWebSearchTool(
   ctx: Context,
@@ -354,15 +536,17 @@ function applyEnhancedWebSearchTool(
   timeoutMs: number,
   fetchEnabled: boolean,
   searxng: { enabled: boolean; url: string },
+  rag: { active: boolean; engine: RagEngine | undefined; databases: { name: string; path: string; topK: number }[] },
 ): void {
   const searxngActive = searxng.enabled && searxng.url.trim().length > 0;
+  const ragActive = rag.active && rag.engine !== undefined && rag.databases.length > 0;
 
   ctx.systemPrompt.section({
     name: "tool:web_search",
     order: 110,
     text: fetchEnabled
-      ? "Use the web_search tool to discover current information on the web. It returns an optional answer plus a list of source URLs (native results, plus an optional SearXNG section). Follow up with web_fetch when you need the full content of a specific result, and cite the relevant URLs as markdown links."
-      : "Use the web_search tool to discover current information on the web. It returns an optional answer plus a list of source URLs (native results, plus an optional SearXNG section). Use the returned source snippets when available, and cite the relevant URLs as markdown links.",
+      ? "Use the web_search tool to discover current information on the web. It returns an optional answer plus a list of source URLs (native results, plus an optional SearXNG section and optional local RAG sections; select which with the optional sources parameter). Follow up with web_fetch when you need the full content of a specific result, and cite the relevant URLs as markdown links."
+      : "Use the web_search tool to discover current information on the web. It returns an optional answer plus a list of source URLs (native results, plus an optional SearXNG section and optional local RAG sections; select which with the optional sources parameter). Use the returned source snippets when available, and cite the relevant URLs as markdown links.",
   });
 
   ctx.tools.register(defineTool({
@@ -377,6 +561,10 @@ function applyEnhancedWebSearchTool(
       topic: {
         type: "string",
         description: "Optional vertical to filter the SearXNG results section. Allowed: general, news, science, it, files, social media, images, videos, map, music. Native DeepSeek results are unaffected.",
+      },
+      sources: {
+        type: "string",
+        description: "Comma-separated list of result sources to include: native, searxng, rag (default: all). native = DeepSeek native results; searxng = the SearXNG section; rag = local RAG database sections. Any combination, e.g. 'native,rag' or 'searxng'.",
       },
     },
     output: {
@@ -416,11 +604,34 @@ function applyEnhancedWebSearchTool(
               },
             },
           },
+          rag: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                name: { type: "string", required: true },
+                results: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      title: { type: "string" },
+                      path: { type: "string", required: true },
+                      excerpt: { type: "string" },
+                      score: { type: "number" },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       render: (_args, value) => [{
         type: "text",
-        text: formatEnhancedSearchOutput(value),
+        text: formatEnhancedSearchOutput(value as WebSearchEnhancedValue),
       }],
       // presentationMeta keeps producing the existing 'web'/'search' card with
       // NATIVE sources only (ToolResultView is a closed union) — reuse the
@@ -435,29 +646,47 @@ function applyEnhancedWebSearchTool(
         throw new Error("query must be a non-empty string");
       }
 
-      const native = await ctx.web.search(
-        { query, maxResults },
-        exec.signal,
-      );
+      const srcs = parseSources(args.sources);
+      const want = (token: "native" | "searxng" | "rag"): boolean =>
+        srcs === "all" || srcs.has(token);
 
       const value: WebSearchEnhancedValue = {
-        ...(native.content !== undefined ? { content: native.content } : {}),
-        sources: native.sources.map((s) => {
+        sources: [],
+        truncated: false,
+      };
+
+      if (want("native")) {
+        const native = await ctx.web.search(
+          { query, maxResults },
+          exec.signal,
+        );
+        if (native.content !== undefined) value.content = native.content;
+        value.sources = native.sources.map((s) => {
           const out: SearxngSource = { url: s.url };
           if (s.title !== undefined) out.title = s.title;
           if (s.snippet !== undefined) out.snippet = s.snippet;
           if (s.publishedAt !== undefined) out.publishedAt = s.publishedAt;
           return out;
-        }),
-        truncated: native.truncated,
-      };
+        });
+        value.truncated = native.truncated;
+      }
 
-      if (searxngActive) {
+      if (want("searxng") && searxngActive) {
         const category = topicToCategory(args.topic);
         const raw = await fetchSearxng(searxng.url, query, category, exec.signal, timeoutMs);
         if (raw !== undefined) {
           const mapped = mapSearxngResults(raw, maxResults);
           if (mapped.length > 0) value.searxngSources = mapped;
+        }
+      }
+
+      if (want("rag") && ragActive) {
+        try {
+          const sections = await rag.engine!.query(query, rag.databases);
+          if (sections.length > 0) value.rag = sections;
+        } catch (err) {
+          // RAG errors degrade silently: omit the section.
+          console.error("[dsh-tool-web-enhanced] RAG query failed:", err);
         }
       }
 
@@ -484,6 +713,45 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
   assertPositiveInteger("searchTimeoutMs", resolved.searchTimeoutMs);
   assertPositiveInteger("fetchMaxOutputChars", resolved.fetchMaxOutputChars);
 
+  const rag = resolveRag(resolved.rag);
+  const ragEngine: RagEngine | undefined =
+    rag.enabled && rag.databases.length > 0
+      ? new RagEngine({
+          storePath: rag.storePath,
+          embedder: createEmbedder(rag.embeddings),
+          logger: (m) => console.log("[dsh-tool-web-enhanced] " + m),
+        })
+      : undefined;
+
+  if (ragEngine !== undefined) {
+    // Boot auto-index: async, non-blocking — failures are logged, not thrown.
+    ragEngine.ensureIndex(rag.databases).catch((e) => {
+      console.error("[dsh-tool-web-enhanced] initial RAG index failed:", e);
+    });
+
+    ctx.tools.register(defineTool({
+      name: "rag_index",
+      description: "Rebuild the local RAG index for all configured databases. Returns the number of chunks indexed per database.",
+      parameters: {},
+      output: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            indexed: { type: "object", required: true, additionalProperties: true },
+          },
+        },
+        render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }],
+      },
+      timeoutMs: 300000,
+      isConcurrencySafe: () => false,
+      async execute() {
+        const counts = await ragEngine.ensureIndex(rag.databases);
+        return { indexed: counts };
+      },
+    }));
+  }
+
   if (resolved.search) {
     applyEnhancedWebSearchTool(
       ctx,
@@ -491,6 +759,7 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
       resolved.searchTimeoutMs,
       resolved.fetch,
       { enabled: resolved.searxngEnabled, url: resolved.searxngUrl },
+      { active: rag.enabled, engine: ragEngine, databases: rag.databases },
     );
   }
   if (resolved.fetch) {
