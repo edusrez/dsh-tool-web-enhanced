@@ -189,12 +189,12 @@ automatically (async, non-blocking) on plugin startup.
 | -------------------------------- | ------ | ------------------------------------ | ----------- |
 | `rag.enabled`                    | boolean| `true`                               | Enable the RAG section + `rag_index` tool. |
 | `rag.storePath`                  | string | `''` (auto)                          | SQLite store path; empty → `<DSH_HOME>/storages/rag/rag.db`. |
-| `rag.embeddings.provider`        | string | `auto`                               | `auto` / `local` / remote. `auto` → remote when a key is present, else local. |
-| `rag.embeddings.apiKeyEnv`       | string | `DEEPINFRA_TOKEN`                    | Env var name holding the remote provider key. |
+| `rag.embeddings.provider`        | string | `auto`                               | Provider selection: `auto` / `local` / `remote`. `auto` → remote when a key is set, else local. |
+| `rag.embeddings.apiKeyEnv`       | string | `EMBEDDING_API_KEY`                  | Env var holding the remote provider's key. |
 | `rag.embeddings.apiKey`          | string | `''`                                 | Literal remote provider key (wins over `apiKeyEnv`). |
-| `rag.embeddings.deepinfraModel`  | string | `BAAI/bge-m3`                        | Default remote embedding model. |
-| `rag.embeddings.deepinfraBaseURL`| string | `https://api.deepinfra.com/v1/openai`| Remote embedding provider; any embeddings-API-compatible endpoint. |
-| `rag.embeddings.localModel`      | string | `Xenova/bge-small-en-v1.5`           | Default local embedding model (downloads ~35 MB ONNX on first use). |
+| `rag.embeddings.model`           | string | `(a multilingual embedding model)`   | Remote embedding model. |
+| `rag.embeddings.baseURL`         | string | `(your embeddings endpoint)`         | Remote embeddings API base URL (embeddings-API-compatible). |
+| `rag.embeddings.localModel`      | string | `(a small ONNX embedding model)`     | Local embedding model (downloaded on first use). |
 | `rag.databases[].name`           | string | —                                    | Database (section) name. |
 | `rag.databases[].path`           | string | —                                    | Directory of Markdown files to index. |
 | `rag.databases[].topK`           | number | `5`                                  | Results returned per database. |

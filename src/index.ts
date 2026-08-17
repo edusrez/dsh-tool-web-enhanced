@@ -335,11 +335,11 @@ export const Config = z.object({
     enabled: z.boolean().default(true),
     storePath: z.string().default(''),
     embeddings: z.object({
-      provider: z.union([z.const('auto'), z.const('deepinfra'), z.const('local')]).default('auto'),
-      apiKeyEnv: z.string().default('DEEPINFRA_TOKEN'),
+      provider: z.union([z.const('auto'), z.const('remote'), z.const('local')]).default('auto'),
+      apiKeyEnv: z.string().default('EMBEDDING_API_KEY'),
       apiKey: z.string().default(''),
-      deepinfraModel: z.string().default('BAAI/bge-m3'),
-      deepinfraBaseURL: z.string().default('https://api.deepinfra.com/v1/openai'),
+      model: z.string().default('BAAI/bge-m3'),
+      baseURL: z.string().default('https://api.deepinfra.com/v1/openai'),
       localModel: z.string().default('Xenova/bge-small-en-v1.5'),
     }).default({} as any),
     databases: z.array(z.object({
@@ -364,11 +364,11 @@ export interface EnhancedConfig {
     enabled: boolean;
     storePath: string;
     embeddings: {
-      provider: 'auto' | 'deepinfra' | 'local';
+      provider: 'auto' | 'remote' | 'local';
       apiKeyEnv: string;
       apiKey: string;
-      deepinfraModel: string;
-      deepinfraBaseURL: string;
+      model: string;
+      baseURL: string;
       localModel: string;
     };
     databases: { name: string; path: string; topK: number }[];
@@ -391,11 +391,11 @@ export interface ResolvedRag {
   enabled: boolean;
   storePath: string;
   embeddings: {
-    provider: 'deepinfra' | 'local';
+    provider: 'remote' | 'local';
     apiKeyEnv: string;
     apiKey: string;
-    deepinfraModel: string;
-    deepinfraBaseURL: string;
+    model: string;
+    baseURL: string;
     localModel: string;
   };
   databases: { name: string; path: string; topK: number }[];
@@ -403,7 +403,7 @@ export interface ResolvedRag {
 
 /**
  * Resolve the raw RAG config into concrete values: default the store path,
- * collapse the `auto` provider to a concrete `deepinfra`/`local` choice, and
+ * collapse the `auto` provider to a concrete `remote`/`local` choice, and
  * resolve the API key (literal wins, then the environment variable).
  *
  * @param rag - the raw `rag` config from the schema.
@@ -418,12 +418,12 @@ export function resolveRag(rag: EnhancedConfig['rag']): ResolvedRag {
     ? rag.embeddings.apiKey
     : (process.env[rag.embeddings.apiKeyEnv] ?? '');
 
-  const provider: 'deepinfra' | 'local' = rag.embeddings.provider === 'deepinfra'
-    ? 'deepinfra'
+  const provider: 'remote' | 'local' = rag.embeddings.provider === 'remote'
+    ? 'remote'
     : rag.embeddings.provider === 'local'
       ? 'local'
       : key.length > 0
-        ? 'deepinfra'
+        ? 'remote'
         : 'local';
 
   return {
@@ -433,8 +433,8 @@ export function resolveRag(rag: EnhancedConfig['rag']): ResolvedRag {
       provider,
       apiKeyEnv: rag.embeddings.apiKeyEnv,
       apiKey: key,
-      deepinfraModel: rag.embeddings.deepinfraModel,
-      deepinfraBaseURL: rag.embeddings.deepinfraBaseURL,
+      model: rag.embeddings.model,
+      baseURL: rag.embeddings.baseURL,
       localModel: rag.embeddings.localModel,
     },
     databases: rag.databases,
@@ -442,11 +442,12 @@ export function resolveRag(rag: EnhancedConfig['rag']): ResolvedRag {
 }
 
 /**
- * Maximum number of input texts sent to DeepInfra per embeddings request.
- * DeepInfra 500s on very large single batches, so `createEmbedder` slices the
- * corpus into bounded requests instead of sending everything at once.
+ * Maximum number of input texts sent to a remote provider per embeddings
+ * request. Some remote providers return HTTP 500 on very large single
+ * batches, so `createEmbedder` slices the corpus into bounded requests
+ * instead of sending everything at once.
  */
-export const DEEPINFRA_EMBEDDING_BATCH_SIZE = 16;
+export const REMOTE_EMBEDDING_BATCH_SIZE = 16;
 
 /**
  * Split `items` into consecutive, order-preserving batches of at most `size`
@@ -471,25 +472,24 @@ let localPipelineCache: { model: string; pipeline: (text: string, opts: object) 
 /**
  * Build an {@link Embedder} for the resolved RAG embeddings config.
  *
- * `deepinfra`: POSTs the inputs in bounded batches (max
- * {@link DEEPINFRA_EMBEDDING_BATCH_SIZE} texts each) to
- * `<deepinfraBaseURL>/embeddings` (OpenAI compatible) and returns
- * `data[].embedding` in input order. `local`: lazily loads a
- * `@huggingface/transformers` feature-extraction pipeline (singleton per
- * model, `q8` quantization) and returns `Array.from(out.data)` for each input
- * text.
+ * `remote`: POSTs the inputs in bounded batches (max
+ * {@link REMOTE_EMBEDDING_BATCH_SIZE} texts each) to `<baseURL>/embeddings`
+ * (an embeddings-API-compatible endpoint) and returns `data[].embedding` in
+ * input order. `local`: lazily loads a transformers.js feature-extraction
+ * pipeline (singleton per model, `q8` quantization) and returns
+ * `Array.from(out.data)` for each input text.
  *
  * @param embeddings - the resolved embeddings config (concrete provider + key).
  * @returns an async `(texts) => vectors` embedder.
  */
 export function createEmbedder(embeddings: ResolvedRag['embeddings']): (texts: string[]) => Promise<number[][]> {
-  if (embeddings.provider === 'deepinfra') {
-    const baseURL = embeddings.deepinfraBaseURL.replace(/\/+$/, '');
+  if (embeddings.provider === 'remote') {
+    const baseURL = embeddings.baseURL.replace(/\/+$/, '');
     return async (texts: string[]) => {
-      // DeepInfra fails (HTTP 500) when a single request carries a whole
-      // corpus, so POST bounded batches and reassemble in input order.
+      // Some remote providers fail (HTTP 500) when a single request carries a
+      // whole corpus, so POST bounded batches and reassemble in input order.
       const vectors: number[][] = [];
-      for (const batch of chunkBatches(texts, DEEPINFRA_EMBEDDING_BATCH_SIZE)) {
+      for (const batch of chunkBatches(texts, REMOTE_EMBEDDING_BATCH_SIZE)) {
         const response = await fetch(`${baseURL}/embeddings`, {
           method: 'POST',
           headers: {
@@ -497,17 +497,17 @@ export function createEmbedder(embeddings: ResolvedRag['embeddings']): (texts: s
             Authorization: `Bearer ${embeddings.apiKey}`,
           },
           body: JSON.stringify({
-            model: embeddings.deepinfraModel,
+            model: embeddings.model,
             input: batch,
             encoding_format: 'float',
           }),
         });
         if (!response.ok) {
-          throw new Error(`deepinfra embeddings request failed: ${response.status}`);
+          throw new Error(`remote embeddings request failed: ${response.status}`);
         }
         const body = (await response.json()) as { data?: { embedding?: number[] }[] };
         if (!Array.isArray(body.data)) {
-          throw new Error('deepinfra embeddings response missing data array');
+          throw new Error('remote embeddings response missing data array');
         }
         for (const d of body.data) vectors.push(d.embedding ?? []);
       }

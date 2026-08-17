@@ -4,9 +4,9 @@
  *
  * The engine ingests `*.md` files, splits them into heading-aligned chunks
  * (with overlap for long sections), embeds each chunk through an injected
- * {@link Embedder} (DeepInfra HTTP or a local transformers.js pipeline — the
- * provider wiring lives elsewhere), and stores the vectors in a
- * `better-sqlite3` + `sqlite-vec` database. Queries embed + normalize the
+ * {@link Embedder} (a remote embeddings-API call or a local transformers.js
+ * pipeline — the provider wiring lives elsewhere), and stores the vectors in
+ * a `better-sqlite3` + `sqlite-vec` database. Queries embed + normalize the
  * prompt, then run a vec0 top-K similarity search restricted to a named
  * database, returning title/path/excerpt/score sources.
  *

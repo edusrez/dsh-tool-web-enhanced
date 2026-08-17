@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   chunkBatches,
-  DEEPINFRA_EMBEDDING_BATCH_SIZE,
+  REMOTE_EMBEDDING_BATCH_SIZE,
   createEmbedder,
 } from "../lib/index.js";
 
@@ -33,13 +33,13 @@ test("chunkBatches splits in order with a shorter last batch", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createEmbedder (deepinfra): bounded batches, order-preserving
+// createEmbedder (remote): bounded batches, order-preserving
 // ---------------------------------------------------------------------------
 
 /**
- * A fake `Response`-shaped object: `ok` plus an OpenAI-shaped `data` array
- * whose `i`-th entry embeds the numeric input text into `[number]`, so order
- * is verifiable in the flattened result.
+ * A fake `Response`-shaped object: `ok` plus an embeddings-shaped `data`
+ * array whose `i`-th entry embeds the numeric input text into `[number]`, so
+ * order is verifiable in the flattened result.
  */
 function makeFakeResponse(batch) {
   return {
@@ -51,7 +51,7 @@ function makeFakeResponse(batch) {
   };
 }
 
-test("deepinfra embedder batches inputs (16/batch) and preserves order", async (t) => {
+test("remote embedder batches inputs (16/batch) and preserves order", async (t) => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, init) => {
@@ -64,12 +64,12 @@ test("deepinfra embedder batches inputs (16/batch) and preserves order", async (
   });
 
   const embedder = createEmbedder({
-    provider: "deepinfra",
-    apiKeyEnv: "DEEPINFRA_TOKEN",
+    provider: "remote",
+    apiKeyEnv: "EMBEDDING_API_KEY",
     apiKey: "test-key",
-    deepinfraModel: "BAAI/bge-m3",
-    deepinfraBaseURL: "https://api.deepinfra.com/v1/openai/",
-    localModel: "Xenova/bge-small-en-v1.5",
+    model: "test-embedding-model",
+    baseURL: "https://embeddings.example.com/v1/openai/",
+    localModel: "test-local-model",
   });
 
   const inputs = Array.from({ length: 40 }, (_, i) => String(i));
@@ -88,14 +88,14 @@ test("deepinfra embedder batches inputs (16/batch) and preserves order", async (
     ],
   );
 
-  // The URL is `${deepinfraBaseURL}/embeddings` with the trailing slash stripped.
-  assert.equal(calls[0].url, "https://api.deepinfra.com/v1/openai/embeddings");
+  // The URL is `${baseURL}/embeddings` with the trailing slash stripped.
+  assert.equal(calls[0].url, "https://embeddings.example.com/v1/openai/embeddings");
 
-  // Request shape: OpenAI-compatible embeddings payload.
+  // Request shape: embeddings-API-compatible payload.
   for (const call of calls) {
-    assert.equal(call.body.model, "BAAI/bge-m3");
+    assert.equal(call.body.model, "test-embedding-model");
     assert.equal(call.body.encoding_format, "float");
-    assert.ok(call.body.input.length <= DEEPINFRA_EMBEDDING_BATCH_SIZE);
+    assert.ok(call.body.input.length <= REMOTE_EMBEDDING_BATCH_SIZE);
   }
 
   // Returned vectors are flattened in input order: [[0],[1],…,[39]].
@@ -106,7 +106,7 @@ test("deepinfra embedder batches inputs (16/batch) and preserves order", async (
   );
 });
 
-test("deepinfra embedder throws the existing message shape on non-2xx", async (t) => {
+test("remote embedder throws the existing message shape on non-2xx", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({ ok: false, status: 500 });
   t.after(() => {
@@ -114,21 +114,21 @@ test("deepinfra embedder throws the existing message shape on non-2xx", async (t
   });
 
   const embedder = createEmbedder({
-    provider: "deepinfra",
-    apiKeyEnv: "DEEPINFRA_TOKEN",
+    provider: "remote",
+    apiKeyEnv: "EMBEDDING_API_KEY",
     apiKey: "test-key",
-    deepinfraModel: "BAAI/bge-m3",
-    deepinfraBaseURL: "https://api.deepinfra.com/v1/openai",
-    localModel: "Xenova/bge-small-en-v1.5",
+    model: "test-embedding-model",
+    baseURL: "https://embeddings.example.com/v1/openai",
+    localModel: "test-local-model",
   });
 
   await assert.rejects(
     embedder(["one", "two"]),
-    /deepinfra embeddings request failed: 500/,
+    /remote embeddings request failed: 500/,
   );
 });
 
-test("deepinfra embedder skips fetch for empty input", async (t) => {
+test("remote embedder skips fetch for empty input", async (t) => {
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
   globalThis.fetch = async () => {
@@ -140,12 +140,12 @@ test("deepinfra embedder skips fetch for empty input", async (t) => {
   });
 
   const embedder = createEmbedder({
-    provider: "deepinfra",
-    apiKeyEnv: "DEEPINFRA_TOKEN",
+    provider: "remote",
+    apiKeyEnv: "EMBEDDING_API_KEY",
     apiKey: "test-key",
-    deepinfraModel: "BAAI/bge-m3",
-    deepinfraBaseURL: "https://api.deepinfra.com/v1/openai",
-    localModel: "Xenova/bge-small-en-v1.5",
+    model: "test-embedding-model",
+    baseURL: "https://embeddings.example.com/v1/openai",
+    localModel: "test-local-model",
   });
 
   assert.deepEqual(await embedder([]), []);

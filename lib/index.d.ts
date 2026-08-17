@@ -145,18 +145,18 @@ export declare const Config: z<Schemastery.ObjectS<{
         enabled: z<boolean, boolean>;
         storePath: z<string, string>;
         embeddings: z<Schemastery.ObjectS<{
-            provider: z<"auto" | "deepinfra" | "local", "auto" | "deepinfra" | "local">;
+            provider: z<"auto" | "remote" | "local", "auto" | "remote" | "local">;
             apiKeyEnv: z<string, string>;
             apiKey: z<string, string>;
-            deepinfraModel: z<string, string>;
-            deepinfraBaseURL: z<string, string>;
+            model: z<string, string>;
+            baseURL: z<string, string>;
             localModel: z<string, string>;
         }>, Schemastery.ObjectT<{
-            provider: z<"auto" | "deepinfra" | "local", "auto" | "deepinfra" | "local">;
+            provider: z<"auto" | "remote" | "local", "auto" | "remote" | "local">;
             apiKeyEnv: z<string, string>;
             apiKey: z<string, string>;
-            deepinfraModel: z<string, string>;
-            deepinfraBaseURL: z<string, string>;
+            model: z<string, string>;
+            baseURL: z<string, string>;
             localModel: z<string, string>;
         }>>;
         databases: z<({
@@ -172,18 +172,18 @@ export declare const Config: z<Schemastery.ObjectS<{
         enabled: z<boolean, boolean>;
         storePath: z<string, string>;
         embeddings: z<Schemastery.ObjectS<{
-            provider: z<"auto" | "deepinfra" | "local", "auto" | "deepinfra" | "local">;
+            provider: z<"auto" | "remote" | "local", "auto" | "remote" | "local">;
             apiKeyEnv: z<string, string>;
             apiKey: z<string, string>;
-            deepinfraModel: z<string, string>;
-            deepinfraBaseURL: z<string, string>;
+            model: z<string, string>;
+            baseURL: z<string, string>;
             localModel: z<string, string>;
         }>, Schemastery.ObjectT<{
-            provider: z<"auto" | "deepinfra" | "local", "auto" | "deepinfra" | "local">;
+            provider: z<"auto" | "remote" | "local", "auto" | "remote" | "local">;
             apiKeyEnv: z<string, string>;
             apiKey: z<string, string>;
-            deepinfraModel: z<string, string>;
-            deepinfraBaseURL: z<string, string>;
+            model: z<string, string>;
+            baseURL: z<string, string>;
             localModel: z<string, string>;
         }>>;
         databases: z<({
@@ -209,18 +209,18 @@ export declare const Config: z<Schemastery.ObjectS<{
         enabled: z<boolean, boolean>;
         storePath: z<string, string>;
         embeddings: z<Schemastery.ObjectS<{
-            provider: z<"auto" | "deepinfra" | "local", "auto" | "deepinfra" | "local">;
+            provider: z<"auto" | "remote" | "local", "auto" | "remote" | "local">;
             apiKeyEnv: z<string, string>;
             apiKey: z<string, string>;
-            deepinfraModel: z<string, string>;
-            deepinfraBaseURL: z<string, string>;
+            model: z<string, string>;
+            baseURL: z<string, string>;
             localModel: z<string, string>;
         }>, Schemastery.ObjectT<{
-            provider: z<"auto" | "deepinfra" | "local", "auto" | "deepinfra" | "local">;
+            provider: z<"auto" | "remote" | "local", "auto" | "remote" | "local">;
             apiKeyEnv: z<string, string>;
             apiKey: z<string, string>;
-            deepinfraModel: z<string, string>;
-            deepinfraBaseURL: z<string, string>;
+            model: z<string, string>;
+            baseURL: z<string, string>;
             localModel: z<string, string>;
         }>>;
         databases: z<({
@@ -236,18 +236,18 @@ export declare const Config: z<Schemastery.ObjectS<{
         enabled: z<boolean, boolean>;
         storePath: z<string, string>;
         embeddings: z<Schemastery.ObjectS<{
-            provider: z<"auto" | "deepinfra" | "local", "auto" | "deepinfra" | "local">;
+            provider: z<"auto" | "remote" | "local", "auto" | "remote" | "local">;
             apiKeyEnv: z<string, string>;
             apiKey: z<string, string>;
-            deepinfraModel: z<string, string>;
-            deepinfraBaseURL: z<string, string>;
+            model: z<string, string>;
+            baseURL: z<string, string>;
             localModel: z<string, string>;
         }>, Schemastery.ObjectT<{
-            provider: z<"auto" | "deepinfra" | "local", "auto" | "deepinfra" | "local">;
+            provider: z<"auto" | "remote" | "local", "auto" | "remote" | "local">;
             apiKeyEnv: z<string, string>;
             apiKey: z<string, string>;
-            deepinfraModel: z<string, string>;
-            deepinfraBaseURL: z<string, string>;
+            model: z<string, string>;
+            baseURL: z<string, string>;
             localModel: z<string, string>;
         }>>;
         databases: z<({
@@ -275,11 +275,11 @@ export interface EnhancedConfig {
         enabled: boolean;
         storePath: string;
         embeddings: {
-            provider: 'auto' | 'deepinfra' | 'local';
+            provider: 'auto' | 'remote' | 'local';
             apiKeyEnv: string;
             apiKey: string;
-            deepinfraModel: string;
-            deepinfraBaseURL: string;
+            model: string;
+            baseURL: string;
             localModel: string;
         };
         databases: {
@@ -294,11 +294,11 @@ export interface ResolvedRag {
     enabled: boolean;
     storePath: string;
     embeddings: {
-        provider: 'deepinfra' | 'local';
+        provider: 'remote' | 'local';
         apiKeyEnv: string;
         apiKey: string;
-        deepinfraModel: string;
-        deepinfraBaseURL: string;
+        model: string;
+        baseURL: string;
         localModel: string;
     };
     databases: {
@@ -309,7 +309,7 @@ export interface ResolvedRag {
 }
 /**
  * Resolve the raw RAG config into concrete values: default the store path,
- * collapse the `auto` provider to a concrete `deepinfra`/`local` choice, and
+ * collapse the `auto` provider to a concrete `remote`/`local` choice, and
  * resolve the API key (literal wins, then the environment variable).
  *
  * @param rag - the raw `rag` config from the schema.
@@ -317,11 +317,12 @@ export interface ResolvedRag {
  */
 export declare function resolveRag(rag: EnhancedConfig['rag']): ResolvedRag;
 /**
- * Maximum number of input texts sent to DeepInfra per embeddings request.
- * DeepInfra 500s on very large single batches, so `createEmbedder` slices the
- * corpus into bounded requests instead of sending everything at once.
+ * Maximum number of input texts sent to a remote provider per embeddings
+ * request. Some remote providers return HTTP 500 on very large single
+ * batches, so `createEmbedder` slices the corpus into bounded requests
+ * instead of sending everything at once.
  */
-export declare const DEEPINFRA_EMBEDDING_BATCH_SIZE = 16;
+export declare const REMOTE_EMBEDDING_BATCH_SIZE = 16;
 /**
  * Split `items` into consecutive, order-preserving batches of at most `size`
  * elements. The last batch is shorter when `items.length` is not a multiple
@@ -335,13 +336,12 @@ export declare function chunkBatches<T>(items: T[], size: number): T[][];
 /**
  * Build an {@link Embedder} for the resolved RAG embeddings config.
  *
- * `deepinfra`: POSTs the inputs in bounded batches (max
- * {@link DEEPINFRA_EMBEDDING_BATCH_SIZE} texts each) to
- * `<deepinfraBaseURL>/embeddings` (OpenAI compatible) and returns
- * `data[].embedding` in input order. `local`: lazily loads a
- * `@huggingface/transformers` feature-extraction pipeline (singleton per
- * model, `q8` quantization) and returns `Array.from(out.data)` for each input
- * text.
+ * `remote`: POSTs the inputs in bounded batches (max
+ * {@link REMOTE_EMBEDDING_BATCH_SIZE} texts each) to `<baseURL>/embeddings`
+ * (an embeddings-API-compatible endpoint) and returns `data[].embedding` in
+ * input order. `local`: lazily loads a transformers.js feature-extraction
+ * pipeline (singleton per model, `q8` quantization) and returns
+ * `Array.from(out.data)` for each input text.
  *
  * @param embeddings - the resolved embeddings config (concrete provider + key).
  * @returns an async `(texts) => vectors` embedder.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- RAG embedding config keys renamed to provider-neutral names (`deepinfraModel`→`model`, `deepinfraBaseURL`→`baseURL`, provider value `deepinfra`→`remote`); `apiKeyEnv` default now `EMBEDDING_API_KEY`.
+
 ### Added
 
 - `sources` parameter on `web_search` (native/searxng/rag, default all).
