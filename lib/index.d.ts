@@ -317,13 +317,31 @@ export interface ResolvedRag {
  */
 export declare function resolveRag(rag: EnhancedConfig['rag']): ResolvedRag;
 /**
+ * Maximum number of input texts sent to DeepInfra per embeddings request.
+ * DeepInfra 500s on very large single batches, so `createEmbedder` slices the
+ * corpus into bounded requests instead of sending everything at once.
+ */
+export declare const DEEPINFRA_EMBEDDING_BATCH_SIZE = 16;
+/**
+ * Split `items` into consecutive, order-preserving batches of at most `size`
+ * elements. The last batch is shorter when `items.length` is not a multiple
+ * of `size`; an empty input yields no batches.
+ *
+ * @param items - the items to split (any element type).
+ * @param size - the maximum batch size (must be a positive integer).
+ * @returns the batches, in input order.
+ */
+export declare function chunkBatches<T>(items: T[], size: number): T[][];
+/**
  * Build an {@link Embedder} for the resolved RAG embeddings config.
  *
- * `deepinfra`: POSTs a batch to `<deepinfraBaseURL>/embeddings` (OpenAI
- * compatible) and returns `data[].embedding` in input order. `local`: lazily
- * loads a `@huggingface/transformers` feature-extraction pipeline (singleton
- * per model, `q8` quantization) and returns `Array.from(out.data)` for each
- * input text.
+ * `deepinfra`: POSTs the inputs in bounded batches (max
+ * {@link DEEPINFRA_EMBEDDING_BATCH_SIZE} texts each) to
+ * `<deepinfraBaseURL>/embeddings` (OpenAI compatible) and returns
+ * `data[].embedding` in input order. `local`: lazily loads a
+ * `@huggingface/transformers` feature-extraction pipeline (singleton per
+ * model, `q8` quantization) and returns `Array.from(out.data)` for each input
+ * text.
  *
  * @param embeddings - the resolved embeddings config (concrete provider + key).
  * @returns an async `(texts) => vectors` embedder.

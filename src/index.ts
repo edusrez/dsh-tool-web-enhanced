@@ -441,17 +441,43 @@ export function resolveRag(rag: EnhancedConfig['rag']): ResolvedRag {
   };
 }
 
+/**
+ * Maximum number of input texts sent to DeepInfra per embeddings request.
+ * DeepInfra 500s on very large single batches, so `createEmbedder` slices the
+ * corpus into bounded requests instead of sending everything at once.
+ */
+export const DEEPINFRA_EMBEDDING_BATCH_SIZE = 16;
+
+/**
+ * Split `items` into consecutive, order-preserving batches of at most `size`
+ * elements. The last batch is shorter when `items.length` is not a multiple
+ * of `size`; an empty input yields no batches.
+ *
+ * @param items - the items to split (any element type).
+ * @param size - the maximum batch size (must be a positive integer).
+ * @returns the batches, in input order.
+ */
+export function chunkBatches<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
 /** A cached local transformers.js feature-extraction pipeline, keyed by model. */
 let localPipelineCache: { model: string; pipeline: (text: string, opts: object) => Promise<{ data: Float32Array | number[] }> } | undefined;
 
 /**
  * Build an {@link Embedder} for the resolved RAG embeddings config.
  *
- * `deepinfra`: POSTs a batch to `<deepinfraBaseURL>/embeddings` (OpenAI
- * compatible) and returns `data[].embedding` in input order. `local`: lazily
- * loads a `@huggingface/transformers` feature-extraction pipeline (singleton
- * per model, `q8` quantization) and returns `Array.from(out.data)` for each
- * input text.
+ * `deepinfra`: POSTs the inputs in bounded batches (max
+ * {@link DEEPINFRA_EMBEDDING_BATCH_SIZE} texts each) to
+ * `<deepinfraBaseURL>/embeddings` (OpenAI compatible) and returns
+ * `data[].embedding` in input order. `local`: lazily loads a
+ * `@huggingface/transformers` feature-extraction pipeline (singleton per
+ * model, `q8` quantization) and returns `Array.from(out.data)` for each input
+ * text.
  *
  * @param embeddings - the resolved embeddings config (concrete provider + key).
  * @returns an async `(texts) => vectors` embedder.
@@ -460,26 +486,32 @@ export function createEmbedder(embeddings: ResolvedRag['embeddings']): (texts: s
   if (embeddings.provider === 'deepinfra') {
     const baseURL = embeddings.deepinfraBaseURL.replace(/\/+$/, '');
     return async (texts: string[]) => {
-      const response = await fetch(`${baseURL}/embeddings`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${embeddings.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: embeddings.deepinfraModel,
-          input: texts,
-          encoding_format: 'float',
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(`deepinfra embeddings request failed: ${response.status}`);
+      // DeepInfra fails (HTTP 500) when a single request carries a whole
+      // corpus, so POST bounded batches and reassemble in input order.
+      const vectors: number[][] = [];
+      for (const batch of chunkBatches(texts, DEEPINFRA_EMBEDDING_BATCH_SIZE)) {
+        const response = await fetch(`${baseURL}/embeddings`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${embeddings.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: embeddings.deepinfraModel,
+            input: batch,
+            encoding_format: 'float',
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`deepinfra embeddings request failed: ${response.status}`);
+        }
+        const body = (await response.json()) as { data?: { embedding?: number[] }[] };
+        if (!Array.isArray(body.data)) {
+          throw new Error('deepinfra embeddings response missing data array');
+        }
+        for (const d of body.data) vectors.push(d.embedding ?? []);
       }
-      const body = (await response.json()) as { data?: { embedding?: number[] }[] };
-      if (!Array.isArray(body.data)) {
-        throw new Error('deepinfra embeddings response missing data array');
-      }
-      return body.data.map((d) => d.embedding ?? []);
+      return vectors;
     };
   }
 
