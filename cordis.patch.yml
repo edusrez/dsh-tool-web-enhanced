@@ -1,0 +1,8 @@
+- insert:
+    - id: tool-web-enhanced
+      name: dsh-tool-web-enhanced
+      config:
+        search: true
+        fetch: true
+        searxngUrl: 'http://127.0.0.1:8080'
+        searxngEnabled: true
