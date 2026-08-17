@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -266,4 +266,37 @@ test("RagEngine does not re-embed unchanged files on re-index (dims check idempo
     afterFirst,
     "unchanged files are not re-embedded on the second run (mtime idempotence)",
   );
+});
+
+test("RagEngine.query awaits ensureIndex when the store is empty", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(
+    join(docs, "algo.md"),
+    "## Algorithms\nAlgorithms sort data and search for matching items in a collection.\n",
+  );
+
+  const storePath = join(dir, "store.sqlite");
+  assert.equal(existsSync(storePath), false, "store file does not exist yet");
+
+  // Count only chunk-batch embedding calls (probe embeds are excluded via the
+  // existing pattern) to prove query() ran the index itself: without it, no
+  // chunk is ever embedded and the db section would come back empty.
+  let batchEmbedCalls = 0;
+  const baseEmbedder = makeFakeEmbedder(32);
+  const countingEmbedder = async (texts) => {
+    if (!(texts.length === 1 && texts[0] === "probe")) batchEmbedCalls += 1;
+    return baseEmbedder(texts);
+  };
+
+  const engine = new RagEngine({ storePath, embedder: countingEmbedder });
+  const databases = [{ name: "docs", path: docs, topK: 2 }];
+
+  // No prior ensureIndex(): query() must build the index itself.
+  const sections = await engine.query("algo", databases);
+
+  assert.equal(sections.length, 1, "a non-empty section comes back for the db");
+  assert.ok(sections[0].results.length > 0, "results returned for the indexed db");
+  assert.ok(batchEmbedCalls > 0, "query() embedded chunks (ran ensureIndex itself)");
 });

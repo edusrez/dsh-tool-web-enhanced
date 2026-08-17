@@ -344,7 +344,9 @@ export class RagEngine {
       const metaGet = db.prepare("SELECT value FROM meta WHERE key = ?");
       const stored = metaGet.get("dims");
       if (stored !== undefined && String((stored as { value: string }).value) !== String(dims)) {
-        this.logger(`rag: dims changed (${String(stored)} → ${dims}); rebuilding chunks`);
+        this.logger(
+          `rag: dims changed (${(stored as { value: string }).value} → ${dims}); rebuilding chunks`,
+        );
         db.exec("DROP TABLE IF EXISTS chunks");
         db.exec("DELETE FROM files");
       }
@@ -463,9 +465,46 @@ export class RagEngine {
     const fs = await import("node:fs");
     const { Database, sqliteVec } = await this.loadDeps();
 
-    if (!fs.existsSync(this.storePath)) return [];
-
     const [queryVector] = await this.embed([queryText]);
+
+    // Ensure the store is ready before running the KNN loop: a query issued
+    // before ensureIndex() has completed (e.g. a web_search racing the
+    // boot-time index) must not return an empty RAG section. The store is not
+    // ready when the file is missing, when the chunks table has no rows for
+    // any of the requested databases, or when the stored dims differ from the
+    // current embedder dims — the same checks ensureIndex() performs.
+    let storeReady = false;
+    if (fs.existsSync(this.storePath)) {
+      const probe = new Database(this.storePath);
+      try {
+        sqliteVec.load(probe);
+        const dimsRow = probe
+          .prepare("SELECT value FROM meta WHERE key = 'dims'")
+          .get() as { value: string } | undefined;
+        storeReady = dimsRow !== undefined && Number(dimsRow.value) === queryVector.length;
+        if (storeReady) {
+          for (const database of databases) {
+            const countRow = probe
+              .prepare("SELECT count(*) AS c FROM chunks WHERE db_name = ?")
+              .get(database.name) as { c: number } | undefined;
+            if (countRow === undefined || countRow.c === 0) {
+              storeReady = false;
+              break;
+            }
+          }
+        }
+      } catch {
+        // Missing/corrupt tables → rely on ensureIndex() to (re)build.
+        storeReady = false;
+      } finally {
+        probe.close();
+      }
+    }
+
+    if (!storeReady) {
+      // Index (or rebuild) first so the query is deterministic.
+      await this.ensureIndex(databases);
+    }
 
     const db = new Database(this.storePath);
     try {
