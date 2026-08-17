@@ -112,7 +112,7 @@ export interface WebSearchEnhancedValue {
  */
 export declare function formatSearxngOutput(sources: readonly SearxngSource[]): string;
 /**
- * Render the RAG sections: one `## <name> (RAG)` block per section, each
+ * Render the RAG sections: one `## RAG — <name>` block per section, each
  * result as `- **title** — path (score …)` with the excerpt on its own
  * indented line.
  *

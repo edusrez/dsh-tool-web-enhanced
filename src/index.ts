@@ -279,7 +279,7 @@ export function formatSearxngOutput(sources: readonly SearxngSource[]): string {
 }
 
 /**
- * Render the RAG sections: one `## <name> (RAG)` block per section, each
+ * Render the RAG sections: one `## RAG — <name>` block per section, each
  * result as `- **title** — path (score …)` with the excerpt on its own
  * indented line.
  *
@@ -294,7 +294,7 @@ export function formatRagOutput(sections: readonly RagSection[] | undefined): st
       const excerpt = r.excerpt.trim();
       return excerpt.length > 0 ? `${head}\n  ${excerpt}` : head;
     });
-    return `## ${section.name} (RAG)\n${lines.join("\n")}`;
+    return `## RAG — ${section.name}\n${lines.join("\n")}`;
   });
   return blocks.join("\n\n");
 }

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `sources` parameter on `web_search` (native/searxng/rag, default all).
-- RAG third section (local or DeepInfra embeddings, sqlite-vec store, one section per configured database).
+- RAG third section (local embedding model or any configured remote embedding provider, sqlite-vec store, one section per configured database).
 - `rag_index` tool.
 
 ## [0.1.0-rc.1] - 2026-08-17

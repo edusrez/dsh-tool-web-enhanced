@@ -1,6 +1,6 @@
 # dsh-tool-web-enhanced
 
-A drop-in enhancement of DeepSeek Harness' web-search tool: adds an optional `topic` vertical filter and a second SearXNG results section to `web_search` — everything else stays byte-for-byte stock.
+A drop-in enhancement of DeepSeek Harness' web-search tool: `web_search` keeps its native results and adds an optional `topic` vertical filter, an optional SearXNG results section, and an optional RAG section (one block per configured local database) — everything else stays byte-for-byte stock.
 
 [![npm](https://img.shields.io/npm/v/dsh-tool-web-enhanced?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-tool-web-enhanced)
 [![downloads](https://img.shields.io/npm/dw/dsh-tool-web-enhanced?style=flat-square)](https://www.npmjs.com/package/dsh-tool-web-enhanced)
@@ -21,9 +21,9 @@ A drop-in enhancement of DeepSeek Harness' web-search tool: adds an optional `to
 - **Self-contained drop-in** — installing the bundle registers the enhanced
   tools and disables the stock `tool-web` row automatically (see
   [Install / Quickstart](#install--quickstart)).
-- **Optional RAG section** — an optional third RAG section, one
-  `## <name> (RAG)` block per configured local database, plus a `sources`
-  parameter to select any combination of native/SearXNG/RAG.
+- **Optional RAG section** — an optional RAG section, one block per
+  configured local database (its own markdown sources), with a `sources`
+  parameter to pick any combination of native/SearXNG/RAG.
 
 ## Install / Quickstart
 
@@ -151,11 +151,16 @@ omitted when there are no SearXNG sources.
 
 ## RAG
 
-The plugin can also augment `web_search` with a **local RAG section**: a
-`## <name> (RAG)` block per configured local Markdown database, retrieving the
-top-K most similar chunks to the query from a `better-sqlite3` + `sqlite-vec`
-store. Chunks are embedded with either DeepInfra (HTTP) or a local
-transformers.js ONNX model.
+The plugin can also augment `web_search` with an optional retrieval section
+over local Markdown databases: a `## RAG — <db name>` markdown block per
+connected database. Each configured local database is indexed into an
+on-machine SQLite store (`better-sqlite3` + `sqlite-vec`), and on every search
+the query retrieves the top-K most similar chunks per database.
+
+The embedding model is used in two places: to index each chunk, and to embed
+the query on every search. Indexing and query data stay on the machine when
+using the local embedding path, or are sent to a configured remote provider if
+you opt into one — nothing is sent unless a provider is configured.
 
 ### `sources` parameter
 
@@ -184,21 +189,20 @@ automatically (async, non-blocking) on plugin startup.
 | -------------------------------- | ------ | ------------------------------------ | ----------- |
 | `rag.enabled`                    | boolean| `true`                               | Enable the RAG section + `rag_index` tool. |
 | `rag.storePath`                  | string | `''` (auto)                          | SQLite store path; empty → `<DSH_HOME>/storages/rag/rag.db`. |
-| `rag.embeddings.provider`        | string | `auto`                               | `auto` / `deepinfra` / `local`. `auto` → deepinfra when a key is present, else local. |
-| `rag.embeddings.apiKeyEnv`       | string | `DEEPINFRA_TOKEN`                    | Env var name holding the DeepInfra key. |
-| `rag.embeddings.apiKey`          | string | `''`                                 | Literal DeepInfra key (wins over `apiKeyEnv`). |
-| `rag.embeddings.deepinfraModel`  | string | `BAAI/bge-m3`                        | DeepInfra embedding model. |
-| `rag.embeddings.deepinfraBaseURL`| string | `https://api.deepinfra.com/v1/openai`| DeepInfra OpenAI-compatible base URL. |
-| `rag.embeddings.localModel`      | string | `Xenova/bge-small-en-v1.5`           | Local transformers.js model. |
+| `rag.embeddings.provider`        | string | `auto`                               | `auto` / `local` / remote. `auto` → remote when a key is present, else local. |
+| `rag.embeddings.apiKeyEnv`       | string | `DEEPINFRA_TOKEN`                    | Env var name holding the remote provider key. |
+| `rag.embeddings.apiKey`          | string | `''`                                 | Literal remote provider key (wins over `apiKeyEnv`). |
+| `rag.embeddings.deepinfraModel`  | string | `BAAI/bge-m3`                        | Default remote embedding model. |
+| `rag.embeddings.deepinfraBaseURL`| string | `https://api.deepinfra.com/v1/openai`| Remote embedding provider; any embeddings-API-compatible endpoint. |
+| `rag.embeddings.localModel`      | string | `Xenova/bge-small-en-v1.5`           | Default local embedding model (downloads ~35 MB ONNX on first use). |
 | `rag.databases[].name`           | string | —                                    | Database (section) name. |
 | `rag.databases[].path`           | string | —                                    | Directory of Markdown files to index. |
 | `rag.databases[].topK`           | number | `5`                                  | Results returned per database. |
 
-> **Local embeddings** (the default when no key is configured) download a small
-> ONNX model (~34MB) on first use, via the optional
-> `@huggingface/transformers` dependency. The **DeepInfra** path uses
-> `DEEPINFRA_TOKEN` (or `rag.embeddings.apiKey`). RAG errors degrade silently
-> — the section is simply omitted from the output.
+> **Local embeddings** (the default when no key is configured) use a bundled
+> ONNX model (~35 MB, downloaded on first use) and keep all data on the
+> machine. The **remote** path sends embed requests to the configured provider.
+> RAG errors degrade silently — the section is simply omitted from the output.
 
 ## Development
 
