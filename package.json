@@ -1,6 +1,6 @@
 {
   "name": "dsh-tool-web-enhanced",
-  "version": "0.2.0-rc.6",
+  "version": "0.3.0-rc.1",
   "description": "Modular search tool for DeepSeek Harness: attach SearXNG, RAG and your own sections to the native web_search.",
   "keywords": [
     "dsh",
