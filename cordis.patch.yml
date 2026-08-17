@@ -10,16 +10,21 @@
       config:
         search: true
         fetch: true
-        searxngUrl: 'http://127.0.0.1:8080'
-        searxngEnabled: true
-        rag:
-          enabled: true
-          storePath: ''
-          embeddings:
-            provider: auto
-            apiKeyEnv: EMBEDDING_API_KEY
-            apiKey: ''
-          databases: []
+        sections:
+          searxng:
+            enabled: true
+            url: http://127.0.0.1:8080
+          rag:
+            enabled: true
+            storePath: ''
+            embeddings:
+              provider: auto
+              apiKeyEnv: EMBEDDING_API_KEY
+              apiKey: ''
+              model: BAAI/bge-m3
+              baseURL: https://api.deepinfra.com/v1/openai
+              localModel: Xenova/bge-small-en-v1.5
+            databases: []
 
 - id: tool-web
   disabled: true

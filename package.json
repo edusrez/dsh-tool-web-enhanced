@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-web-enhanced",
   "version": "0.2.0-rc.6",
-  "description": "Drop-in dsh-tool-web enhancement: optional topic filter plus a SearXNG result section in web_search.",
+  "description": "Modular search tool for DeepSeek Harness: attach SearXNG, RAG and your own sections to the native web_search.",
   "keywords": [
     "dsh",
     "dsh-plugin",

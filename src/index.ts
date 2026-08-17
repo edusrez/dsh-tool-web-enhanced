@@ -11,17 +11,26 @@ import {
   DEFAULT_FETCH_MAX_OUTPUT_CHARS,
 } from "@deepseek-ai/dsh-tool-web";
 
-import { RagEngine, parseSources, type RagSection } from "./rag.js";
+import { RagEngine } from "./rag.js";
+import {
+  buildSections,
+  createRagSection,
+  createSearxngSection,
+  resolveSourcesParameter,
+  type SectionBlock,
+  type SearchSection,
+  type SectionSource,
+} from "./modules.js";
 
 /**
  * `dsh-tool-web-enhanced` — a drop-in enhancement of
  * `@deepseek-ai/dsh-tool-web` that ONLY enhances `web_search`.
  *
- * It layers an optional SearXNG native section under the stock DeepSeek
- * search results, and adds an optional `topic` vertical filter mapped to
- * SearXNG `categories`. `web_fetch` is registered IDENTICALLY to stock
+ * It layers optional native-result sections (SearXNG, RAG) under the stock
+ * DeepSeek search results, selected via the `sections` config container and
+ * the `sources` parameter. `web_fetch` is registered IDENTICALLY to stock
  * (reused via {@link applyWebFetchTool}), so its behaviour is byte-for-byte
- * unchanged. When SearXNG is absent, disabled, or unreachable, `web_search`
+ * unchanged. When no section is configured/enabled/unreachable, `web_search`
  * degrades silently to exactly the stock behaviour and output shape.
  *
  * @module dsh-tool-web-enhanced
@@ -38,281 +47,30 @@ export const name = "tool-web-enhanced";
 export const inject = ["tools", "web", "systemPrompt"];
 
 // ---------------------------------------------------------------------------
-// Constants
+// Re-exports for docs/tests
 // ---------------------------------------------------------------------------
 
-/**
- * Default SearXNG base URL. SearXNG is optional: an empty/falsy `searxngUrl`
- * config value disables the SearXNG section entirely (native-only).
- */
-export const DEFAULT_SEARXNG_URL = "http://127.0.0.1:8080";
+export {
+  buildSections,
+  createRagSection,
+  createSearxngSection,
+  DEFAULT_SEARXNG_URL,
+  SEARXNG_SNIPPET_MAX_CHARS,
+  TOPIC_CATEGORIES,
+  formatSearxngOutput,
+  mapSearxngResults,
+  mapSearxngSource,
+  resolveSourcesParameter,
+  topicToCategory,
+  truncateSnippet,
+} from "./modules.js";
 
-/** Maximum snippet length (chars) retained from a SearXNG result's content. */
-export const SEARXNG_SNIPPET_MAX_CHARS = 200;
-
-// ---------------------------------------------------------------------------
-// Topic → SearXNG categories mapping
-// ---------------------------------------------------------------------------
-
-/**
- * The set of `topic` values accepted on `web_search`, each mapped to the
- * SearXNG `categories` value it forwards to the JSON API. `topic` is purely a
- * SearXNG vertical filter: native DeepSeek results are unaffected.
- */
-export const TOPIC_CATEGORIES: Readonly<Record<string, string>> = {
-  general: "general",
-  news: "news",
-  science: "science",
-  it: "it",
-  files: "files",
-  "social media": "social media",
-  images: "images",
-  videos: "videos",
-  map: "map",
-  music: "music",
-};
-
-/**
- * Resolve an optional `topic` argument to the SearXNG `categories` value.
- *
- * @param topic - optional vertical from the `web_search` `topic` parameter.
- * @returns the mapped category, or `undefined` when the topic is absent or
- *   unrecognised (the caller then omits `categories`, falling back to
- *   SearXNG's default `general`).
- */
-export function topicToCategory(topic: string | undefined): string | undefined {
-  if (topic === undefined) return undefined;
-  const key = topic.trim();
-  return Object.prototype.hasOwnProperty.call(TOPIC_CATEGORIES, key)
-    ? TOPIC_CATEGORIES[key]
-    : undefined;
-}
-
-// ---------------------------------------------------------------------------
-// SearXNG result mapping and capping
-// ---------------------------------------------------------------------------
-
-/** The source-item shape shared by `sources` and `searxngSources` in the output. */
-export interface SearxngSource {
-  url: string;
-  title?: string;
-  snippet?: string;
-  publishedAt?: string;
-}
-
-/** One raw SearXNG JSON result item (the fields we consume). */
-export interface SearxngResultItem {
-  title?: string;
-  url?: string;
-  content?: string;
-  publishedDate?: string | null;
-  engine?: string;
-  category?: string;
-  score?: number;
-}
-
-/** Truncate a string to `max` characters, `…`-suffixed when cut. */
-export function truncateSnippet(text: string | undefined, max: number): string | undefined {
-  if (text === undefined) return undefined;
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return undefined;
-  if (trimmed.length <= max) return trimmed;
-  return `${trimmed.slice(0, max - 1)}…`;
-}
-
-/**
- * Map one raw SearXNG result item to the canonical source shape.
- *
- * @param item - a SearXNG JSON result item.
- * @returns a source with `url`, `title`, `snippet` (content truncated to
- *   {@link SEARXNG_SNIPPET_MAX_CHARS}), and `publishedAt` when present; skips
- *   a result that lacks a usable URL.
- */
-export function mapSearxngSource(item: SearxngResultItem): SearxngSource | undefined {
-  if (typeof item.url !== "string" || item.url.trim().length === 0) return undefined;
-  const source: SearxngSource = { url: item.url };
-  if (typeof item.title === "string" && item.title.trim().length > 0) {
-    source.title = item.title.trim();
-  }
-  const snippet = truncateSnippet(item.content, SEARXNG_SNIPPET_MAX_CHARS);
-  if (snippet !== undefined) source.snippet = snippet;
-  if (typeof item.publishedDate === "string" && item.publishedDate.trim().length > 0) {
-    source.publishedAt = item.publishedDate.trim();
-  }
-  return source;
-}
-
-/**
- * Map a SearXNG JSON result set to capped, canonical source objects.
- *
- * @param items - the SearXNG `results` array (may be missing/empty).
- * @param maxResults - the deployment source cap applied to the SearXNG section.
- * @returns up to `maxResults` valid sources, in result order.
- */
-export function mapSearxngResults(
-  items: readonly SearxngResultItem[] | undefined,
-  maxResults: number,
-): SearxngSource[] {
-  if (!Array.isArray(items)) return [];
-  const out: SearxngSource[] = [];
-  for (const item of items) {
-    if (out.length >= maxResults) break;
-    const mapped = mapSearxngSource(item);
-    if (mapped !== undefined) out.push(mapped);
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// SearXNG HTTP fetch (optional, graceful-degrade)
-// ---------------------------------------------------------------------------
-
-/** The parsed SearXNG JSON API envelope (only the fields we read). */
-interface SearxngResponse {
-  results?: SearxngResultItem[];
-}
-
-/**
- * Fetch one SearXNG results page from the JSON API. Never throws: any
- * failure (network, timeout, non-2xx, invalid JSON) resolves to `undefined`
- * so the caller can silently fall back to native-only results.
- *
- * The call is bounded by a local `timeoutMs` timer that aborts an internal
- * AbortController, composed with the caller's `signal`: an external abort
- * aborts the same controller with the external reason. Whichever fires
- * first wins, so the bound holds whether or not a `signal` is provided.
- *
- * @param baseUrl - the configured SearXNG base URL.
- * @param query - the search query (URL-encoded by the caller).
- * @param category - the resolved SearXNG `categories` value, or `undefined`.
- * @param signal - the tool execution signal (cancellation/timeout); optional.
- * @param timeoutMs - the local timeout budget for this call (ms).
- * @returns the mapped sources, or `undefined` on any failure.
- */
-export async function fetchSearxng(
-  baseUrl: string,
-  query: string,
-  category: string | undefined,
-  signal: AbortSignal | undefined,
-  timeoutMs: number,
-): Promise<SearxngResultItem[] | undefined> {
-  const url = new URL("/search", baseUrl);
-  url.searchParams.set("q", query);
-  url.searchParams.set("format", "json");
-  if (category !== undefined) url.searchParams.set("categories", category);
-
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(new DOMException("SearXNG timeout", "TimeoutError")),
-    timeoutMs,
-  );
-  const onExternalAbort = () => controller.abort(signal?.reason);
-  if (signal !== undefined) {
-    if (signal.aborted) {
-      controller.abort(signal.reason);
-    } else {
-      signal.addEventListener("abort", onExternalAbort, { once: true });
-    }
-  }
-
-  try {
-    const response = await fetch(url.toString(), {
-      signal: controller.signal,
-      headers: { accept: "application/json" },
-    });
-    if (!response.ok) return undefined;
-    const body = (await response.json()) as SearxngResponse;
-    if (typeof body !== "object" || body === null || !Array.isArray(body.results)) {
-      return undefined;
-    }
-    return body.results;
-  } catch {
-    return undefined;
-  } finally {
-    clearTimeout(timeout);
-    if (signal !== undefined) {
-      signal.removeEventListener("abort", onExternalAbort);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Two-section render
-// ---------------------------------------------------------------------------
-
-/** The canonical `web_search` output value (native + optional SearXNG + RAG sections). */
-export interface WebSearchEnhancedValue {
-  content?: string;
-  sources: SearxngSource[];
-  truncated: boolean;
-  searxngSources?: SearxngSource[];
-  rag?: RagSection[];
-}
-
-/**
- * Render the SearXNG section as one markdown block. Reuses the exact
- * `- [title](url) — snippet (publishedAt)` shape of the stock formatter.
- *
- * @param sources - the SearXNG sources (already mapped + capped).
- * @returns a `## SearXNG results` markdown block, or an empty string when
- *   there are no SearXNG sources.
- */
-export function formatSearxngOutput(sources: readonly SearxngSource[]): string {
-  if (sources.length === 0) return "";
-  const lines = sources.map((source) => {
-    let label: string;
-    if (source.title !== undefined && source.title.length > 0) label = source.title;
-    else {
-      try {
-        label = new URL(source.url).hostname;
-      } catch {
-        label = source.url;
-      }
-    }
-    const meta: string[] = [];
-    if (source.snippet !== undefined && source.snippet.length > 0) meta.push(source.snippet);
-    if (source.publishedAt !== undefined && source.publishedAt.length > 0) meta.push(`(${source.publishedAt})`);
-    const suffix = meta.length > 0 ? ` — ${meta.join(" ")}` : "";
-    return `- [${label}](${source.url})${suffix}`;
-  });
-  return `## SearXNG results\n${lines.join("\n")}`;
-}
-
-/**
- * Render the RAG sections: one `## RAG — <name>` block per section, each
- * result as `- **title** — path (score …)` with the excerpt on its own
- * indented line.
- *
- * @param sections - the RAG sections (from {@link RagEngine.query}).
- * @returns the combined markdown, or an empty string when there are none.
- */
-export function formatRagOutput(sections: readonly RagSection[] | undefined): string {
-  if (sections === undefined || sections.length === 0) return "";
-  const blocks = sections.map((section) => {
-    const lines = section.results.map((r) => {
-      const head = `- **${r.title}** — ${r.path} (score ${r.score.toFixed(3)})`;
-      const excerpt = r.excerpt.trim();
-      return excerpt.length > 0 ? `${head}\n  ${excerpt}` : head;
-    });
-    return `## RAG — ${section.name}\n${lines.join("\n")}`;
-  });
-  return blocks.join("\n\n");
-}
-
-/**
- * Render the complete enhanced output: the stock native block (via
- * {@link formatSearchOutput}) followed by the SearXNG block when present.
- *
- * @param value - the canonical enhanced output value.
- * @returns the combined model-facing text.
- */
-export function formatEnhancedSearchOutput(value: WebSearchEnhancedValue): string {
-  const native = formatSearchOutput(value);
-  const searxng = value.searxngSources !== undefined ? formatSearxngOutput(value.searxngSources) : "";
-  const rag = formatRagOutput(value.rag);
-  const parts = [native, searxng, rag].filter((p) => p.length > 0);
-  return parts.join("\n\n");
-}
+export type {
+  SectionBlock,
+  SectionRunContext,
+  SectionSource,
+  SearchSection,
+} from "./modules.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -320,7 +78,8 @@ export function formatEnhancedSearchOutput(value: WebSearchEnhancedValue): strin
 
 /**
  * Plugin configuration. Extends the stock `dsh-tool-web` keys (which keep
- * identical names and defaults) with the optional SearXNG-driven keys.
+ * identical names and defaults) with a unified `sections` container replacing
+ * the former flat top-level search/RAG keys (breaking change).
  */
 export const Config = z.object({
   search: z.boolean().default(true),
@@ -329,24 +88,28 @@ export const Config = z.object({
   fetchTimeoutMs: z.number().default(DEFAULT_WEB_TOOL_TIMEOUT_MS),
   searchTimeoutMs: z.number().default(DEFAULT_WEB_TOOL_TIMEOUT_MS),
   fetchMaxOutputChars: z.number().default(DEFAULT_FETCH_MAX_OUTPUT_CHARS),
-  searxngUrl: z.string().default(DEFAULT_SEARXNG_URL),
-  searxngEnabled: z.boolean().default(true),
-  rag: z.object({
-    enabled: z.boolean().default(true),
-    storePath: z.string().default(''),
-    embeddings: z.object({
-      provider: z.union([z.const('auto'), z.const('remote'), z.const('local')]).default('auto'),
-      apiKeyEnv: z.string().default('EMBEDDING_API_KEY'),
-      apiKey: z.string().default(''),
-      model: z.string().default('BAAI/bge-m3'),
-      baseURL: z.string().default('https://api.deepinfra.com/v1/openai'),
-      localModel: z.string().default('Xenova/bge-small-en-v1.5'),
+  sections: z.object({
+    searxng: z.object({
+      enabled: z.boolean().default(true),
+      url: z.string().default('http://127.0.0.1:8080'),
     }).default({} as any),
-    databases: z.array(z.object({
-      name: z.string(),
-      path: z.string(),
-      topK: z.number().default(5),
-    })).default([]),
+    rag: z.object({
+      enabled: z.boolean().default(true),
+      storePath: z.string().default(''),
+      embeddings: z.object({
+        provider: z.union([z.const('auto'), z.const('remote'), z.const('local')]).default('auto'),
+        apiKeyEnv: z.string().default('EMBEDDING_API_KEY'),
+        apiKey: z.string().default(''),
+        model: z.string().default('BAAI/bge-m3'),
+        baseURL: z.string().default('https://api.deepinfra.com/v1/openai'),
+        localModel: z.string().default('Xenova/bge-small-en-v1.5'),
+      }).default({} as any),
+      databases: z.array(z.object({
+        name: z.string(),
+        path: z.string(),
+        topK: z.number().default(5),
+      })).default([]),
+    }).default({} as any),
   }).default({} as any),
 });
 
@@ -358,20 +121,21 @@ export interface EnhancedConfig {
   fetchTimeoutMs: number;
   searchTimeoutMs: number;
   fetchMaxOutputChars: number;
-  searxngUrl: string;
-  searxngEnabled: boolean;
-  rag: {
-    enabled: boolean;
-    storePath: string;
-    embeddings: {
-      provider: 'auto' | 'remote' | 'local';
-      apiKeyEnv: string;
-      apiKey: string;
-      model: string;
-      baseURL: string;
-      localModel: string;
+  sections: {
+    searxng: { enabled: boolean; url: string };
+    rag: {
+      enabled: boolean;
+      storePath: string;
+      embeddings: {
+        provider: 'auto' | 'remote' | 'local';
+        apiKeyEnv: string;
+        apiKey: string;
+        model: string;
+        baseURL: string;
+        localModel: string;
+      };
+      databases: { name: string; path: string; topK: number }[];
     };
-    databases: { name: string; path: string; topK: number }[];
   };
 }
 
@@ -406,10 +170,10 @@ export interface ResolvedRag {
  * collapse the `auto` provider to a concrete `remote`/`local` choice, and
  * resolve the API key (literal wins, then the environment variable).
  *
- * @param rag - the raw `rag` config from the schema.
+ * @param rag - the raw `sections.rag` config from the schema.
  * @returns the resolved RAG configuration.
  */
-export function resolveRag(rag: EnhancedConfig['rag']): ResolvedRag {
+export function resolveRag(rag: EnhancedConfig['sections']['rag']): ResolvedRag {
   const storePath = rag.storePath.trim().length > 0
     ? rag.storePath
     : `${process.env.DSH_HOME ?? process.cwd()}/storages/rag/rag.db`;
@@ -541,49 +305,101 @@ export function createEmbedder(embeddings: ResolvedRag['embeddings']): (texts: s
 }
 
 // ---------------------------------------------------------------------------
-// Application
+// Enhanced web_search
 // ---------------------------------------------------------------------------
+
+/** The canonical `web_search` output value (native + extra source sections). */
+export interface WebSearchEnhancedValue {
+  content?: string;
+  sources: SectionSource[];
+  truncated: boolean;
+  sections?: SectionBlock[];
+}
+
+/**
+ * Render a `SectionBlock` as one markdown block. Each source renders as
+ * `- **<title-or-hostname>** — <url or path> (score X)` with the snippet on
+ * its own indented line when present.
+ *
+ * @param block - the section block to render.
+ * @returns the `## <name>` markdown block, or an empty string when empty.
+ */
+export function formatSectionBlock(block: SectionBlock): string {
+  if (block.sources.length === 0) return "";
+  const lines = block.sources.map((s) => {
+    let label: string;
+    if (s.title !== undefined && s.title.length > 0) label = s.title;
+    else {
+      try {
+        label = new URL(s.url).hostname;
+      } catch {
+        label = s.url;
+      }
+    }
+    const target = s.path ?? s.url;
+    let head = `- **${label}** — ${target}`;
+    if (s.score !== undefined) head += ` (score ${s.score.toFixed(3)})`;
+    if (s.snippet !== undefined && s.snippet.length > 0) {
+      head += `\n  ${s.snippet}`;
+    }
+    return head;
+  });
+  return `## ${block.name}\n${lines.join("\n")}`;
+}
+
+/**
+ * Render the complete enhanced output: the stock native block (via
+ * {@link formatSearchOutput}) followed by each section block in order.
+ *
+ * @param value - the canonical enhanced output value.
+ * @returns the combined model-facing text.
+ */
+export function formatEnhancedSearchOutput(value: WebSearchEnhancedValue): string {
+  const parts: string[] = [formatSearchOutput(value)];
+  if (value.sections !== undefined) {
+    for (const block of value.sections) {
+      const text = formatSectionBlock(block);
+      if (text.length > 0) parts.push(text);
+    }
+  }
+  return parts.filter((p) => p.length > 0).join("\n\n");
+}
 
 /**
  * Register the enhanced `web_search` tool.
  *
  * Identical to the stock registration except: (a) an optional `topic`
- * parameter mapped to SearXNG `categories`, (b) a second, optional SearXNG
- * results section appended to the native results, and (c) a
- * `searxngSources` field in the output schema carrying that section. When
- * SearXNG is disabled/unreachable the value, render, and presentation meta
- * are byte-for-byte the stock behaviour.
+ * parameter forwarded to the SearXNG section as a category filter, (b) a
+ * generalized `sections` array in the output schema carrying each selected
+ * section's blocks, and (c) a dynamic `sources` parameter. When no section is
+ * enabled/selected/unreachable the value, render, and presentation meta are
+ * byte-for-byte the stock behaviour.
  *
- * @param ctx - context whose `tools` and `systemPrompt` registries receive the
- *   registrations; both are effect-scoped and unregister on plugin dispose.
- * @param maxResults - the deployment source cap (native + SearXNG sections).
+ * @param ctx - context whose `tools`, `web`, and `systemPrompt` seam receive
+ *   the registrations; both are effect-scoped and unregister on dispose.
+ * @param maxResults - the deployment source cap (native + sections).
  * @param timeoutMs - the cooperative tool-call budget (ms).
  * @param fetchEnabled - whether `web_fetch` is also exposed (drives guidance).
- * @param searxng - resolved SearXNG options ({ enabled, url }).
- * @param rag - resolved RAG options ({ active, engine, databases }).
+ * @param sections - the enabled sections (from {@link buildSections}).
  */
 function applyEnhancedWebSearchTool(
   ctx: Context,
   maxResults: number,
   timeoutMs: number,
   fetchEnabled: boolean,
-  searxng: { enabled: boolean; url: string },
-  rag: { active: boolean; engine: RagEngine | undefined; databases: { name: string; path: string; topK: number }[] },
+  sections: SearchSection[],
 ): void {
-  const searxngActive = searxng.enabled && searxng.url.trim().length > 0;
-  const ragActive = rag.active && rag.engine !== undefined && rag.databases.length > 0;
-
   ctx.systemPrompt.section({
     name: "tool:web_search",
     order: 110,
     text: fetchEnabled
-      ? "Use the web_search tool to discover current information on the web. It returns an optional answer plus a list of source URLs (native results, plus an optional SearXNG section and optional local RAG sections; select which with the optional sources parameter). Follow up with web_fetch when you need the full content of a specific result, and cite the relevant URLs as markdown links."
-      : "Use the web_search tool to discover current information on the web. It returns an optional answer plus a list of source URLs (native results, plus an optional SearXNG section and optional local RAG sections; select which with the optional sources parameter). Use the returned source snippets when available, and cite the relevant URLs as markdown links.",
+      ? "Use the web_search tool to discover current information on the web. It returns an optional answer plus a list of source URLs (native results, plus the optional installed result sections; select which with the optional sources parameter). Follow up with web_fetch when you need the full content of a specific result, and cite the relevant URLs as markdown links."
+      : "Use the web_search tool to discover current information on the web. It returns an optional answer plus a list of source URLs (native results, plus the optional installed result sections; select which with the optional sources parameter). Use the returned source snippets when available, and cite the relevant URLs as markdown links.",
   });
 
   ctx.tools.register(defineTool({
     name: "web_search",
-    description: "Search the web for current information. Returns an optional summary answer and a list of source URLs, plus an optional SearXNG results section.",
+    description: "Search the web for current information. Returns an optional summary answer and a list of source URLs, plus the optional installed result sections.",
     parameters: {
       query: {
         type: "string",
@@ -596,7 +412,7 @@ function applyEnhancedWebSearchTool(
       },
       sources: {
         type: "string",
-        description: "Comma-separated list of result sources to include: native, searxng, rag (default: all). native = DeepSeek native results; searxng = the SearXNG section; rag = local RAG database sections. Any combination, e.g. 'native,rag' or 'searxng'.",
+        description: "Comma-separated list of result sources to include: native plus any enabled section id (default: all). native = DeepSeek native results. Any combination, e.g. 'native,rag' or 'searxng'.",
       },
     },
     output: {
@@ -623,36 +439,24 @@ function applyEnhancedWebSearchTool(
             type: "boolean",
             required: true,
           },
-          searxngSources: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                url: { type: "string", required: true },
-                title: { type: "string" },
-                snippet: { type: "string" },
-                publishedAt: { type: "string" },
-              },
-            },
-          },
-          rag: {
+          sections: {
             type: "array",
             items: {
               type: "object",
               additionalProperties: false,
               properties: {
                 name: { type: "string", required: true },
-                results: {
+                sources: {
                   type: "array",
                   items: {
                     type: "object",
                     additionalProperties: false,
                     properties: {
+                      url: { type: "string", required: true },
                       title: { type: "string" },
-                      path: { type: "string", required: true },
-                      excerpt: { type: "string" },
+                      snippet: { type: "string" },
                       score: { type: "number" },
+                      path: { type: "string" },
                     },
                   },
                 },
@@ -678,49 +482,47 @@ function applyEnhancedWebSearchTool(
         throw new Error("query must be a non-empty string");
       }
 
-      const srcs = parseSources(args.sources);
-      const want = (token: "native" | "searxng" | "rag"): boolean =>
-        srcs === "all" || srcs.has(token);
+      const wanted = resolveSourcesParameter(args.sources, sections);
 
       const value: WebSearchEnhancedValue = {
         sources: [],
         truncated: false,
       };
 
-      if (want("native")) {
+      if (wanted.native) {
         const native = await ctx.web.search(
           { query, maxResults },
           exec.signal,
         );
         if (native.content !== undefined) value.content = native.content;
         value.sources = native.sources.map((s) => {
-          const out: SearxngSource = { url: s.url };
+          const out: SectionSource = { url: s.url };
           if (s.title !== undefined) out.title = s.title;
           if (s.snippet !== undefined) out.snippet = s.snippet;
-          if (s.publishedAt !== undefined) out.publishedAt = s.publishedAt;
+          if (s.publishedAt !== undefined) (out as { publishedAt?: string }).publishedAt = s.publishedAt;
           return out;
         });
         value.truncated = native.truncated;
       }
 
-      if (want("searxng") && searxngActive) {
-        const category = topicToCategory(args.topic);
-        const raw = await fetchSearxng(searxng.url, query, category, exec.signal, timeoutMs);
-        if (raw !== undefined) {
-          const mapped = mapSearxngResults(raw, maxResults);
-          if (mapped.length > 0) value.searxngSources = mapped;
-        }
-      }
-
-      if (want("rag") && ragActive) {
+      const blocks: SectionBlock[] = [];
+      for (const section of sections) {
+        if (!section.enabled) continue;
+        if (!wanted.sections.has(section.id)) continue;
         try {
-          const sections = await rag.engine!.query(query, rag.databases);
-          if (sections.length > 0) value.rag = sections;
+          const produced = await section.run(query, {
+            maxResults,
+            topic: args.topic,
+            sources: wanted.sections,
+            signal: exec.signal,
+          });
+          if (produced !== undefined) blocks.push(...produced);
         } catch (err) {
-          // RAG errors degrade silently: omit the section.
-          console.error("[dsh-tool-web-enhanced] RAG query failed:", err);
+          // Any section failure degrades silently: omit that section.
+          console.error(`[dsh-tool-web-enhanced] section '${section.id}' failed:`, err);
         }
       }
+      if (blocks.length > 0) value.sections = blocks;
 
       return value;
     },
@@ -728,6 +530,10 @@ function applyEnhancedWebSearchTool(
     presentResult: (args, result) => presentSearchResult(args, result),
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Application
+// ---------------------------------------------------------------------------
 
 /**
  * Register the enabled web tools. `web_search` is the enhanced variant;
@@ -745,7 +551,7 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
   assertPositiveInteger("searchTimeoutMs", resolved.searchTimeoutMs);
   assertPositiveInteger("fetchMaxOutputChars", resolved.fetchMaxOutputChars);
 
-  const rag = resolveRag(resolved.rag);
+  const rag = resolveRag(resolved.sections.rag);
   const ragEngine: RagEngine | undefined =
     rag.enabled && rag.databases.length > 0
       ? new RagEngine({
@@ -755,9 +561,20 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
         })
       : undefined;
 
-  if (ragEngine !== undefined) {
+  // Build the enabled sections once at boot (in config order).
+  const sections = buildSections(
+    { searxng: resolved.sections.searxng, rag: { enabled: rag.enabled, databases: rag.databases } },
+    { ragEngine, searxngTimeoutMs: resolved.searchTimeoutMs },
+  );
+
+  // The RAG section is the only one exposing an index accessor.
+  const ragSection = sections.find((s) => s.id === "rag") as
+    | (SearchSection & { ensureIndex?: (databases: { name: string; path: string; topK: number }[]) => Promise<Record<string, number>> })
+    | undefined;
+
+  if (ragEngine !== undefined && ragSection !== undefined) {
     // Boot auto-index: async, non-blocking — failures are logged, not thrown.
-    ragEngine.ensureIndex(rag.databases).catch((e) => {
+    ragSection.ensureIndex!(rag.databases).catch((e) => {
       console.error("[dsh-tool-web-enhanced] initial RAG index failed:", e);
     });
 
@@ -778,7 +595,7 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
       timeoutMs: 300000,
       isConcurrencySafe: () => false,
       async execute() {
-        const counts = await ragEngine.ensureIndex(rag.databases);
+        const counts = await ragSection.ensureIndex!(rag.databases);
         return { indexed: counts };
       },
     }));
@@ -790,8 +607,7 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
       resolved.searchMaxResults,
       resolved.searchTimeoutMs,
       resolved.fetch,
-      { enabled: resolved.searxngEnabled, url: resolved.searxngUrl },
-      { active: rag.enabled, engine: ragEngine, databases: rag.databases },
+      sections,
     );
   }
   if (resolved.fetch) {

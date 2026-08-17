@@ -1,6 +1,6 @@
 # dsh-tool-web-enhanced
 
-A drop-in enhancement of DeepSeek Harness' web-search tool: `web_search` keeps its native results and adds an optional `topic` vertical filter, an optional SearXNG results section, and an optional RAG section (one block per configured local database) — everything else stays byte-for-byte stock.
+A **drop-in replacement for the stock `web_search` tool that is modular by sections**: the native search results stay as the first section, and you attach additional search modules — each contributing its own section — such as a local SearXNG instance and RAG databases (local markdown sources). The native behaviour is unchanged; everything else is optional.
 
 [![npm](https://img.shields.io/npm/v/dsh-tool-web-enhanced?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-tool-web-enhanced)
 [![downloads](https://img.shields.io/npm/dw/dsh-tool-web-enhanced?style=flat-square)](https://www.npmjs.com/package/dsh-tool-web-enhanced)
@@ -8,34 +8,31 @@ A drop-in enhancement of DeepSeek Harness' web-search tool: `web_search` keeps i
 [![stars](https://img.shields.io/github/stars/edusrez/dsh-tool-web-enhanced?style=flat-square)](https://github.com/edusrez/dsh-tool-web-enhanced)
 [![last commit](https://img.shields.io/github/last-commit/edusrez/dsh-tool-web-enhanced?style=flat-square)](https://github.com/edusrez/dsh-tool-web-enhanced)
 
+## What it is
+
+`dsh-tool-web-enhanced` is a drop-in replacement for DeepSeek Harness' stock `web_search` tool. When no modules are configured, `web_search` behaves **exactly** like stock: the native results are the only section. Turn on a module and it contributes its own section to the same search response:
+
+- the **native** DeepSeek search results remain the first section, unchanged;
+- you can **attach additional search modules**, each rendered as its own section — a local **SearXNG** instance, **RAG databases** (local markdown sources), and more;
+- the extension point is a clean module interface (`SearchSection`) plus a config surface (`sections:`), so adding a new section type is a small, documented, code-level step (fork or PR the repo).
+
+Everything is **optional**: with no modules configured, `web_search` is exactly stock.
+
 ## Features
 
-- **Optional `topic` parameter** — `web_search` accepts an optional `topic`
-  argument mapped to SearXNG `categories`. Native DeepSeek results are not
-  affected.
-- **Second results section** — a `SearXNG results` section is appended under
-  the native results, using the same source-item shape as the stock `sources`.
-- **Silent degradation** — when SearXNG is absent, disabled
-  (`searxngEnabled: false`), or unreachable, `web_search` produces exactly
-  the stock behaviour and output shape, without throwing.
-- **Self-contained drop-in** — installing the bundle registers the enhanced
-  tools and disables the stock `tool-web` row automatically (see
-  [Install / Quickstart](#install--quickstart)).
-- **Optional RAG section** — an optional RAG section, one block per
-  configured local database (its own markdown sources), with a `sources`
-  parameter to pick any combination of native/SearXNG/RAG.
+- **Modular per-section architecture** — each search source is a `SearchSection` registered under `sections:`. Native results stay first; every additional module renders as its own section.
+- **Built-in modules** — a **SearXNG** section (rendered as `SearXNG results`) and a **RAG** section over local markdown databases (one `RAG — <dbName>` block per database).
+- **Optional `topic` and `sources` parameters** — `topic` forwards a vertical hint to modules that support it; `sources` picks any combination of native / SearXNG / RAG (`native`, `searxng`, `rag`, or `all`).
+- **Silent degradation** — a module that is absent, disabled, or unreachable is simply omitted, never an error; results degrade to the remaining sections.
+- **Self-contained drop-in** — the bundle registers the enhanced tools and disables the stock `tool-web` row automatically on install.
 
-## Install / Quickstart
+## Install
 
 ```bash
 npm install dsh-tool-web-enhanced
 ```
 
-This is a DSH bundle: `package.json` carries `dsh.bundle.patch =
-./cordis.patch.yml`, which inserts the enhanced plugin row and disables the
-stock `tool-web` row in one install. For CLI profiles, installing the package
-is the whole swap — no manual profile edit required. For preset-realm Web
-surfaces, the preset still disables its own `tool-web` row.
+This is a DSH bundle: `package.json` carries `dsh.bundle.patch = ./cordis.patch.yml`, which inserts the enhanced plugin row and disables the stock `tool-web` row in one install. Installing the package is the whole swap for CLI profiles — no manual profile edit required. For preset-realm web surfaces, the preset still disables its own `tool-web` row.
 
 ```yaml
 # cordis.patch.yml (bundled with this package)
@@ -45,179 +42,125 @@ surfaces, the preset still disables its own `tool-web` row.
       config:
         search: true
         fetch: true
-        searxngUrl: 'http://127.0.0.1:8080'
-        searxngEnabled: true
+        sections:
+          searxng:
+            enabled: true
+            url: 'http://127.0.0.1:8080'
+          rag:
+            enabled: true
+            storePath: ''
+            embeddings:
+              provider: auto
+              apiKeyEnv: EMBEDDING_API_KEY
+              apiKey: ''
+            databases: []
 
 - id: tool-web
   disabled: true
 ```
 
-## Connecting SearXNG
+Installing self-disables the stock `tool-web` row, so this package is the entire web-search swap.
 
-SearXNG is **optional**. The plugin only talks to it over the local JSON API:
+## Configuration
 
-```
-GET {searxngUrl}/search?q=<query>&format=json[&categories=<category>]
-```
+The enhanced behaviour lives under one unified `sections:` container. Keys are neutral parameter names. Stock `search` / `fetch` keys keep their existing names and defaults.
 
-Run any SearXNG instance that exposes `format=json` and point `searxngUrl` at
-its base URL. For example, a Docker Compose service at `/opt/searxng`:
+| Key                                    | Type   | Default                                  | Description |
+| -------------------------------------- | ------ | ---------------------------------------- | ----------- |
+| `search`                               | boolean| `true`                                   | Register `web_search`. |
+| `fetch`                                | boolean| `true`                                   | Register `web_fetch` (unchanged). |
+| `sections.searxng.enabled`             | boolean| `true`                                   | Enable the SearXNG section. |
+| `sections.searxng.url`                 | string | `http://127.0.0.1:8080`                  | Base URL of the local SearXNG JSON API. |
+| `sections.rag.enabled`                 | boolean| `true`                                   | Enable the RAG section + `rag_index` tool. |
+| `sections.rag.storePath`               | string | `''` (auto)                              | Search-index store path; empty → a default under the data home. |
+| `sections.rag.embeddings.provider`     | string | `auto`                                   | Embedding selection: `auto` / `local` / `remote`. `auto` → remote when a key is set, else local. |
+| `sections.rag.embeddings.apiKeyEnv`    | string | `EMBEDDING_API_KEY`                      | Env var holding the remote provider's key. |
+| `sections.rag.embeddings.apiKey`       | string | `''`                                     | Literal remote provider key (wins over `apiKeyEnv`). |
+| `sections.rag.embeddings.model`        | string | `(a multilingual embedding model)`       | Remote embedding model. |
+| `sections.rag.embeddings.baseURL`      | string | `(your embeddings endpoint)`             | Remote embeddings API base URL (embeddings-API-compatible). |
+| `sections.rag.embeddings.localModel`   | string | `(a small local embedding model)`        | Local embedding model (downloaded on first use). |
+| `sections.rag.databases[].name`        | string | —                                        | Database (section) name. |
+| `sections.rag.databases[].path`        | string | —                                        | Directory of markdown files to index. |
+| `sections.rag.databases[].topK`        | number | `5`                                      | Results returned per database. |
 
-```yaml
-services:
-  searxng:
-    image: searxng/searxng:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - SEARXNG_BASE_URL=http://127.0.0.1:8080/
-    volumes:
-      - ./searxng:/etc/searxng
-```
+The stock `search` / `fetch` keys are kept unchanged for drop-in compatibility.
 
-then set `searxngUrl: 'http://127.0.0.1:8080'`.
+## Usage
 
-> **Guarantee**: if SearXNG is absent (or `searxngEnabled: false`, or
-> `searxngUrl` is empty), `web_search` is **exactly stock** — only the native
-> `ctx.web.search` results are produced and rendered.
+`web_search` accepts the stock `query` plus two optional parameters:
 
-## `topic` values
+| Param     | Required | Description |
+| --------- | -------- | ----------- |
+| `query`   | yes      | The search query. |
+| `topic`   | no       | Vertical hint, forwarded to sections that support it (e.g. SearXNG categories): `general`, `news`, `science`, `it`, `files`, `social media`, `images`, `videos`, `map`, `music`. |
+| `sources` | no       | Comma-separated tokens — `native` plus each enabled section id. Default `all`. Examples: `native,searxng` or `searxng,rag`. |
 
-`topic` is optional. It maps to the SearXNG `categories` query parameter and
-filters only the SearXNG section; the native DeepSeek results are never
-filtered. An absent or unrecognised `topic` omits `categories` (SearXNG's
-default `general`).
-
-| `topic` value  | SearXNG `categories` |
-| -------------- | -------------------- |
-| `general`      | `general`            |
-| `news`         | `news`               |
-| `science`      | `science`            |
-| `it`           | `it`                 |
-| `files`        | `files`              |
-| `social media` | `social media`       |
-| `images`       | `images`             |
-| `videos`       | `videos`             |
-| `map`          | `map`                |
-| `music`        | `music`              |
-
-## Configuration reference
-
-Existing stock keys keep identical names and defaults; SearXNG keys are
-additive.
-
-> The stock `fetch*` keys are kept ONLY for drop-in config compatibility —
-> `web_fetch` is NOT modified by this plugin (it is re-registered verbatim
-> from the stock package). Setting them has no enhanced behaviour.
-
-| Key                   | Type    | Default                  | Description |
-| --------------------- | ------- | ------------------------ | ----------- |
-| `search`              | boolean | `true`                   | Register `web_search`. |
-| `fetch`               | boolean | `true`                   | Register `web_fetch` (unchanged). |
-| `searchMaxResults`    | number  | `8`                      | Source cap for both native and SearXNG sections. |
-| `searchTimeoutMs`     | number  | `30000`                  | Cooperative budget for `web_search` (incl. the SearXNG call). |
-| `fetchTimeoutMs`      | number  | `30000`                  | Cooperative budget for `web_fetch`. |
-| `fetchMaxOutputChars` | number  | `200000`                 | Output cap for `web_fetch`. |
-| `searxngUrl`          | string  | `http://127.0.0.1:8080`  | SearXNG base URL; empty/falsy disables SearXNG. |
-| `searxngEnabled`      | boolean | `true`                   | When `false`, skip the SearXNG section entirely. |
-
-> **Note on `searxngEnabled`**: it **defaults to `true`**. With `searxngUrl`
-> pointing at `http://127.0.0.1:8080`, a running SearXNG instance is
-> expected. If SearXNG is **not** deployed, every `web_search` performs one
-> extra (silently-failed) connection attempt to the local JSON API before
-> falling back to native-only results — harmless, but avoidable. Set
-> `searxngEnabled: false` when you are not using SearXNG to skip that
-> attempt entirely.
-
-## Output shape
-
-`web_search` returns the stock canonical shape plus an optional
-`searxngSources` array and an optional `rag` array:
+The output shape carries the native results plus a `sections` array — one entry per module that returned results:
 
 ```jsonc
 {
-  "content": "...",            // optional native answer
-  "sources": [ { "url": "...", "title": "...", "snippet": "...", "publishedAt": "..." } ],
+  "content": "...",                 // optional native answer
+  "sources": [ { "url": "...", "title": "...", "snippet": "..." } ],  // native
   "truncated": false,
-  "searxngSources": [ { "url": "...", "title": "...", "snippet": "...", "publishedAt": "..." } ],
-  "rag": [ { "name": "...", "results": [ { "title": "...", "path": "...", "excerpt": "...", "score": 0.72 } ] } ]
+  "sections": [
+    {
+      "name": "SearXNG results",
+      "sources": [ { "url": "...", "title": "...", "snippet": "...", "score": 0.9 } ]
+    },
+    {
+      "name": "RAG — my-docs",
+      "sources": [ { "url": "...", "title": "...", "path": "...", "score": 0.72 } ]
+    }
+  ]
 }
 ```
 
-`searxngSources` uses the same source-item shape as `sources`. The rendered
-text is the stock `formatSearchOutput(value)` result followed by a
-`## SearXNG results` markdown block (same `- [title](url) — snippet` shape),
-omitted when there are no SearXNG sources.
+## Connecting SearXNG
 
-## RAG
+The SearXNG section is **optional**, and the plugin only talks to a SearXNG instance over its local **JSON** API (`format=json`). Point `sections.searxng.url` at the base URL of any instance that exposes JSON output:
 
-The plugin can also augment `web_search` with an optional retrieval section
-over local Markdown databases: a `## RAG — <db name>` markdown block per
-connected database. Each configured local database is indexed into an
-on-machine SQLite store (`better-sqlite3` + `sqlite-vec`), and on every search
-the query retrieves the top-K most similar chunks per database.
+```
+GET {sections.searxng.url}/search?q=<query>&format=json[&categories=<topic>]
+```
 
-The embedding model is used in two places: to index each chunk, and to embed
-the query on every search. Indexing and query data stay on the machine when
-using the local embedding path, or are sent to a configured remote provider if
-you opt into one — nothing is sent unless a provider is configured.
+The simplest way to stand one up is a Docker Compose service exposing the JSON API on a local port. Having no running instance is fine: the SearXNG section is **silently omitted** when it is disabled, unreachable, or empty.
 
-### `sources` parameter
+> **Guarantee**: when a module is absent, disabled, or unreachable, `web_search` never errors — the section is simply omitted and results degrade to whatever remains (down to native-only, exactly stock).
 
-`web_search` accepts an optional `sources` parameter — a comma-separated list
-selecting which result sections to include:
+## RAG section
 
-| Value      | Section                          |
-| ---------- | -------------------------------- |
-| `native`   | DeepSeek native results.         |
-| `searxng`  | The SearXNG results section.     |
-| `rag`      | Local RAG database sections.     |
+The RAG module indexes local markdown databases into an on-machine store and, on every search, retrieves the most similar chunks per database — one `RAG — <dbName>` section per configured database.
 
-The default is `all` (every available section). Any combination is allowed,
-e.g. `native,rag` or `searxng`.
+**The embedding step** is used in two places: to index each chunk, and to embed the query on every search. With the **local** path (no key configured) indexing and query data stay on the machine; a **remote** provider is used only if you configure one — nothing is sent unless a provider is configured.
 
-### `rag_index` tool
+When RAG is enabled with at least one database, a **`rag_index`** tool is registered. It rebuilds the local RAG index for all configured databases and returns the number of chunks indexed per database. The index is also built automatically (async, non-blocking) on startup.
 
-When RAG is enabled and at least one database is configured, a `rag_index` tool
-is registered. It rebuilds the local RAG index for all configured databases and
-returns the number of chunks indexed per database. The index is also built
-automatically (async, non-blocking) on plugin startup.
+## Adding your own section
 
-### RAG configuration
+The whole point of this package is that `web_search` is modular **by sections**. To add a new search source you write a small, self-contained module — no changes to the core tool:
 
-| Key                              | Type   | Default                              | Description |
-| -------------------------------- | ------ | ------------------------------------ | ----------- |
-| `rag.enabled`                    | boolean| `true`                               | Enable the RAG section + `rag_index` tool. |
-| `rag.storePath`                  | string | `''` (auto)                          | SQLite store path; empty → `<DSH_HOME>/storages/rag/rag.db`. |
-| `rag.embeddings.provider`        | string | `auto`                               | Provider selection: `auto` / `local` / `remote`. `auto` → remote when a key is set, else local. |
-| `rag.embeddings.apiKeyEnv`       | string | `EMBEDDING_API_KEY`                  | Env var holding the remote provider's key. |
-| `rag.embeddings.apiKey`          | string | `''`                                 | Literal remote provider key (wins over `apiKeyEnv`). |
-| `rag.embeddings.model`           | string | `(a multilingual embedding model)`   | Remote embedding model. |
-| `rag.embeddings.baseURL`         | string | `(your embeddings endpoint)`         | Remote embeddings API base URL (embeddings-API-compatible). |
-| `rag.embeddings.localModel`      | string | `(a small ONNX embedding model)`     | Local embedding model (downloaded on first use). |
-| `rag.databases[].name`           | string | —                                    | Database (section) name. |
-| `rag.databases[].path`           | string | —                                    | Directory of Markdown files to index. |
-| `rag.databases[].topK`           | number | `5`                                  | Results returned per database. |
+1. **Define a `SearchSection`** — give it an `id` (used as a `sources` token), an `enabled` flag, and a `run(query, ctx)` method that returns the section's result blocks (`SectionBlock[]`).
+2. **Add its config slice** under `sections:` in `cordis.patch.yml` — any parameters the module needs.
+3. **Wire it into `buildSections`** — register the new module alongside the built-in ones so it is instantiated when enabled.
 
-> **Local embeddings** (the default when no key is configured) use a bundled
-> ONNX model (~35 MB, downloaded on first use) and keep all data on the
-> machine. The **remote** path sends embed requests to the configured provider.
-> RAG errors degrade silently — the section is simply omitted from the output.
+That's it — roughly fifteen lines. The module contract lives in `src/modules.ts` (the `SearchSection` interface and `buildSections` composition point). Because modules are an isolated list, the package is fork/PR-friendly: a new section type is a small, documented, code-level addition that composes with the native-first output shape and the `sources` selection.
+
+## Output shape
+
+See [Usage](#usage) above: `web_search` returns the canonical stock fields (`content`, `sources` for native, `truncated`) plus a `sections[]` array — one entry per module that returned results, each with a `name` and its own `sources[]`. A module with no results is omitted entirely.
 
 ## Development
 
 - `npm run build` — compiles `src/` to `lib/` with `tsc` (NodeNext).
 - `node --test` — runs the unit tests in `test/` against the built `lib/`.
-- Smoke-test in a DSH profile — install the local checkout into an isolated
-  development profile, then inspect the composed configuration:
+- Smoke-test in a DSH profile — install the local checkout into an isolated development profile, then inspect the composed configuration:
 
   ```bash
   dsh plugin --profile dev add /path/to/dsh-tool-web-enhanced
   dsh --profile dev --dump-config
   ```
 
-  The dumped tree must show the `tool-web-enhanced` row plus the disabled
-  `tool-web` row. Exercise `web_search` end-to-end in that profile afterward.
+  The dumped tree must show the `tool-web-enhanced` row plus the disabled `tool-web` row. Exercise `web_search` end-to-end in that profile afterward.
 
 ## License
 

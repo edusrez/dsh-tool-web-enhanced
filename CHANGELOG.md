@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking**: config moved to a unified `sections:` container (`sections.searxng.{enabled,url}` and `sections.rag.*` replace the flat `searxngUrl` / `searxngEnabled` / `rag.*` keys).
+- **Breaking**: `web_search` output now uses a `sections[]` array (one entry per module that returned results) instead of the flat `searxngSources` / `rag` fields.
+- **Breaking**: `sources` is now derived from enabled modules (`native` + each enabled section id) rather than a fixed native/searxng/rag list.
+- SearXNG and RAG are now **built-in modules** of a modular per-section architecture (`SearchSection` interface + `buildSections` composition); adding a new section type is a small, documented code-level step.
 - RAG embedding config keys renamed to provider-neutral names (`deepinfraModel`→`model`, `deepinfraBaseURL`→`baseURL`, provider value `deepinfra`→`remote`); `apiKeyEnv` default now `EMBEDDING_API_KEY`.
 
 ### Added
