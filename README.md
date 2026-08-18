@@ -1,5 +1,7 @@
 # dsh-tool-web-enhanced
 
+English | [中文](README.zh.md)
+
 A **drop-in replacement for the stock `web_search` tool that is modular by sections**: the native search results stay as the first section, and you attach additional search modules — each contributing its own section — such as a local SearXNG instance and RAG databases (local markdown sources). The native behaviour is unchanged; everything else is optional.
 
 [![npm](https://img.shields.io/npm/v/dsh-tool-web-enhanced?style=flat-square&logo=npm)](https://www.npmjs.com/package/dsh-tool-web-enhanced)
