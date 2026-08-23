@@ -23,8 +23,9 @@
 ## 功能特性
 
 - **按板块模块化的架构** —— 每个搜索源都是一个注册在 `sections:` 之下的 `SearchSection`。原生结果始终排在第一位；每个额外的模块都渲染为独立的板块。
-- **内置模块** —— 一个 **SearXNG** 板块（渲染为 `SearXNG results`）和一个基于本地 markdown 数据库的 **RAG** 板块（每个数据库一个 `RAG — <dbName>` 块）。
-- **可选的 `topic` 与 `sources` 参数** —— `topic` 将垂直（vertical）提示转发给支持它的模块；`sources` 可选原生 / SearXNG / RAG 的任意组合（`native`、`searxng`、`rag` 或 `all`）。
+- **内置模块** —— 一个 **SearXNG** 板块（渲染为 `SearXNG results`）、一个基于本地 markdown 数据库的 **RAG** 板块（每个数据库一个 `RAG — <dbName>` 块），以及一个 **Parallel** 板块（Parallel Web Systems Search API，渲染为 `Parallel results`）。
+- **备选的 `web_fetch` provider** —— 一个 **opt-in** 的 `parallel-extract` 抓取 provider（Parallel Web Systems Extract API），会把某个 URL 的完整文档返回为 markdown。注册进 `ctx.web`；由部署 profile 的 `fetchProvider: 'parallel-extract'` 选中。
+- **可选的 `topic` 与 `sources` 参数** —— `topic` 将垂直（vertical）提示转发给支持它的模块；`sources` 可选原生 / SearXNG / RAG / Parallel 的任意组合（`native`、`searxng`、`rag`、`parallel` 或 `all`）。
 - **静默降级** —— 缺失、被禁用或不可达的模块会被直接忽略，绝不会报错；结果会降级到剩余板块。
 - **自包含的直接替代品** —— 该 bundle 在安装时注册增强后的工具，并自动禁用自带的 `tool-web` 插件行。
 
@@ -48,6 +49,10 @@ npm install dsh-tool-web-enhanced
           searxng:
             enabled: true
             url: 'http://127.0.0.1:8080'
+          parallel:
+            enabled: true
+            apiKeyEnv: PARALLEL_API_KEY
+            apiKey: ''
           rag:
             enabled: true
             storePath: ''
@@ -56,6 +61,13 @@ npm install dsh-tool-web-enhanced
               apiKeyEnv: EMBEDDING_API_KEY
               apiKey: ''
             databases: []
+          # Parallel Extract 抓取 provider —— OPT-IN（默认 enabled: false）。
+          parallelExtract:
+            enabled: false
+            apiKeyEnv: PARALLEL_API_KEY
+            apiKey: ''
+            extractMode: full
+            timeoutMs: 60000
 
 - id: tool-web
   disabled: true
@@ -73,6 +85,11 @@ npm install dsh-tool-web-enhanced
 | `fetch`                                   | boolean | `true`                                   | 注册 `web_fetch`（保持不变）。 |
 | `sections.searxng.enabled`                | boolean | `true`                                   | 启用 SearXNG 板块。 |
 | `sections.searxng.url`                    | string  | `http://127.0.0.1:8080`                  | 本地 SearXNG JSON API 的 Base URL。 |
+| `sections.parallel.enabled`               | boolean | `true`                                   | 启用 Parallel（Parallel Web Systems Search API）板块。 |
+| `sections.parallel.apiKeyEnv`             | string  | `PARALLEL_API_KEY`                       | 保存 Parallel API key 的环境变量。 |
+| `sections.parallel.apiKey`                | string  | `''`                                     | 字面 Parallel API key（优先于 `apiKeyEnv`）。 |
+| `sections.parallel.mode`                  | string  | `fast`                                   | Parallel 搜索模式：`turbo` / `fast` / `basic` / `advanced`。 |
+| `sections.parallel.maxResults`            | number  | `10`                                     | 该板块返回的最大结果数（`≤10`，无分页）。 |
 | `sections.rag.enabled`                    | boolean | `true`                                   | 启用 RAG 板块与 `rag_index` 工具。 |
 | `sections.rag.storePath`                  | string  | `''`（自动）                             | 搜索索引的存储路径；为空时使用 data 主目录下的默认位置。 |
 | `sections.rag.embeddings.provider`        | string  | `auto`                                   | 嵌入（embedding）选择：`auto` / `local` / `remote`。`auto` → 设置了 key 时用远程，否则用本地。 |
@@ -84,6 +101,11 @@ npm install dsh-tool-web-enhanced
 | `sections.rag.databases[].name`           | string  | —                                        | 数据库（板块）名称。 |
 | `sections.rag.databases[].path`           | string  | —                                        | 需要建立索引的 markdown 文件目录。 |
 | `sections.rag.databases[].topK`           | number  | `5`                                      | 每个数据库返回的结果数量。 |
+| `parallelExtract.enabled`                 | boolean | `false`                                  | 注册 Parallel Extract 抓取 provider（`ctx.web`）。**OPT-IN。** |
+| `parallelExtract.apiKeyEnv`               | string  | `PARALLEL_API_KEY`                       | 保存 Parallel API key 的环境变量（与 `sections.parallel` 同一个 key）。 |
+| `parallelExtract.apiKey`                  | string  | `''`                                     | 字面 Parallel API key（优先于 `apiKeyEnv`）。 |
+| `parallelExtract.extractMode`             | string  | `full`                                   | `full` → 完整的 markdown 文档；`snippets` → 仅摘录。 |
+| `parallelExtract.timeoutMs`               | number  | `60000`                                  | 单次调用超时（毫秒）；Extract API 较慢（1–20s）。 |
 
 自带的 `search` / `fetch` 键为保持可直接替换的兼容性而保持不变。
 
@@ -95,7 +117,7 @@ npm install dsh-tool-web-enhanced
 | --------- | -------- | ---- |
 | `query`   | 是       | 搜索查询词。 |
 | `topic`   | 否       | 垂直（vertical）提示，转发给支持它的板块（例如 SearXNG 的 categories）：`general`、`news`、`science`、`it`、`files`、`social media`、`images`、`videos`、`map`、`music`。 |
-| `sources` | 否       | 以逗号分隔的标记——`native` 加上每一个已启用的板块 id。默认 `all`。示例：`native,searxng` 或 `searxng,rag`。 |
+| `sources` | 否       | 以逗号分隔的标记——`native` 加上每一个已启用的板块 id。默认 `all`。示例：`native,searxng`、`searxng,rag` 或 `searxng,parallel`。 |
 
 输出的结构包含原生结果外加一个 `sections` 数组——每个返回了结果的模块对应一条记录：
 
@@ -112,6 +134,10 @@ npm install dsh-tool-web-enhanced
     {
       "name": "RAG — my-docs",
       "sources": [ { "url": "...", "title": "...", "path": "...", "score": 0.72 } ]
+    },
+    {
+      "name": "Parallel results",
+      "sources": [ { "url": "...", "title": "...", "snippet": "..." } ]
     }
   ]
 }
@@ -128,6 +154,44 @@ GET {sections.searxng.url}/search?q=<query>&format=json[&categories=<topic>]
 最简单的方式是部署一个在本地端口开放 JSON API 的 Docker Compose 服务。没有运行中的实例也没关系：当 SearXNG 板块被禁用、不可达或结果为空时，它会被**静默忽略**。
 
 > **保证**：当一个模块缺失、被禁用或不可达时，`web_search` 绝不会报错——该板块会被直接忽略，结果降级到剩余部分（最低到仅原生，与原生完全一致）。
+
+## Parallel 板块
+
+Parallel 板块查询 [Parallel Web Systems Search API](https://api.parallel.ai/v1/search)（一种为 AI 代理构建的声明式语义 Web 搜索），并把来源渲染为原生结果下方的 `Parallel results` 块。它调用 `POST https://api.parallel.ai/v1/search`，使用 `x-api-key` 请求头（不是 bearer token）以及 `{ objective, search_queries, mode }` 请求体：
+
+```
+POST {https://api.parallel.ai/v1/search}
+Headers: x-api-key: <key>
+Body: { "objective": "<query>", "search_queries": ["<query>"], "mode": "fast" }
+```
+
+该板块需要一个 key 才能做任何事——把 `sections.parallel.apiKeyEnv` 设为一个环境变量（默认 `PARALLEL_API_KEY`），或把 `sections.parallel.apiKey` 设为字面 key。**解析不到 key 时该板块会静默失效**（返回 `undefined`，绝不调用 API）。因此它完全是 **opt-in**：发布默认 config 会启用它，但在环境变量里出现 key 之前，不会抓取或发送任何东西。该 key 绝不会提交到任何仓库文件里。
+
+默认情况下它请求 fast（`mode: fast`）档位，并把结果上限设为 `sections.parallel.maxResults`（默认 `10`，即 API 的单次调用上限——API 没有分页）。失败（网络、超时、非 2xx、响应格式错误）会静默降级为 `undefined`，和 SearXNG 板块完全一样。
+
+## Parallel Extract 抓取 provider
+
+`web_fetch` 工具会通过 web seam 的 `fetchProvider` config 所选定的 provider 来抓取一个 URL（默认是自带的 HTTP provider）。本包注册一个 **opt-in 的替代品**：`parallel-extract`，它由 [Parallel Web Systems Extract API](https://api.parallel.ai/v1/extract) 支撑。它调用 `POST https://api.parallel.ai/v1/extract`，使用 `x-api-key` 请求头和 `{ urls: [<url>], advanced_settings: { full_content: <bool> } }` 请求体，并把返回的文档映射为抓取结果的 markdown 文本主体。
+
+```
+POST https://api.parallel.ai/v1/extract
+Headers: x-api-key: <key>, Content-Type: application/json
+Body: { "urls": ["<url>"], "advanced_settings": { "full_content": true } }
+```
+
+它**完全 opt-in 且默认失效**：`parallelExtract.enabled` 默认是 `false`，因此该 provider 永远不会被注册，自带的 `web_fetch` 永远不会被取代。要使用它：
+
+1. 启用该 provider：`parallelExtract.enabled: true`（`apiKeyEnv` 默认为 `PARALLEL_API_KEY`，或用字面 `apiKey`）。
+2. 在部署 profile 中把 **web seam 固定到它**（本包不会、也不该设置 seam config）：`fetchProvider: 'parallel-extract'`（或 `$DSH_WEB_FETCH_PROVIDER=parallel-extract`）。
+
+没有可解析的 key 时，该 provider 报告自身不可用（它的 `available()` 是 `false`），直接调用会以结构化的 `WebError` 干净地失败。失败（非 2xx、响应格式错误、无结果 / `errors[]`、超时）也会遵循其他抓取 provider 的契约，以干净的 `WebError` 呈现——绝不会给出误导性的结果。
+
+`parallelExtract.extractMode` 控制返回内容：
+
+- `full`（默认）：请求 `advanced_settings.full_content = true`，返回完整的 markdown 文档（`results[].full_content`），当 API 返回 `null` 时回退到拼接的摘录。
+- `snippets`：不设置 `full_content`，返回拼接的 `results[].excerpts`——如果你只需要片段，这样更便宜也更快。
+
+API 每次请求最多接受 20 个 URL，按每 1000 个 URL 收费 1 美元；该 provider 每次 `web_fetch` 调用发送一个 URL，并在 `buildParallelExtractBody` 中强制执行每次请求的上限。
 
 ## RAG 板块
 
