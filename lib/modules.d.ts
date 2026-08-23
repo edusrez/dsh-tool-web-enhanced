@@ -15,6 +15,8 @@
  * @module dsh-tool-web-enhanced/modules
  */
 import { RagEngine, type RagDatabaseConfig } from "./rag.js";
+import type { WebFetchProvider, WebFetchRequest, WebFetchResult } from "@deepseek-ai/dsh-web";
+import type { Context } from "@deepseek-ai/cordis";
 /** One retrieved source item returned by a section. */
 export interface SectionSource {
     url: string;
@@ -206,6 +208,109 @@ export declare function createParallelSection(config: {
     maxResults?: number;
     timeoutMs?: number;
 }): SearchSection;
+/** The registered provider id; select it with the web seam `fetchProvider` config. */
+export declare const PARALLEL_EXTRACT_PROVIDER_ID = "parallel-extract";
+/** Parallel Extract API endpoint. */
+export declare const PARALLEL_EXTRACT_API_URL = "https://api.parallel.ai/v1/extract";
+/** The maximum number of URLs the Parallel Extract API accepts per request. */
+export declare const PARALLEL_EXTRACT_MAX_URLS = 20;
+/** Default `extractMode`: request the complete markdown document (`full_content`). */
+export declare const PARALLEL_EXTRACT_MODE_DEFAULT: ParallelExtractMode;
+/** Default timeout (ms) for a Parallel Extract call — the API is slow (1–20s). */
+export declare const PARALLEL_EXTRACT_TIMEOUT_MS = 60000;
+/**
+ * How much of the document the Parallel Extract API returns. `full` requests
+ * the complete markdown document (`advanced_settings.full_content`); `snippets`
+ * leaves it off (excerpts only, cheaper and faster).
+ */
+export type ParallelExtractMode = "full" | "snippets";
+/** One raw Parallel Extract result item (the fields we consume). */
+export interface ParallelExtractResultItem {
+    url?: string;
+    title?: string;
+    publish_date?: string | null;
+    excerpts?: string[];
+    /** The complete markdown document when `full_content` was requested. */
+    full_content?: string | null;
+}
+/** The parsed Parallel Extract API envelope (only the fields we read). */
+export interface ParallelExtractResponse {
+    results?: ParallelExtractResultItem[];
+    errors?: unknown[];
+    extract_id?: string;
+    warnings?: unknown;
+}
+/** The Parallel Extract API request body. */
+export interface ParallelExtractRequest {
+    urls: string[];
+    advanced_settings: {
+        full_content: boolean;
+    };
+}
+/**
+ * Build the Parallel Extract request body for a batch of URLs, enforcing the
+ * API's ≤ {@link PARALLEL_EXTRACT_MAX_URLS} per-request cap. `full` requests
+ * the complete markdown document; `snippets` leaves `full_content` off
+ * (excerpts only). Throws a `WebError` when the batch is empty or over the cap.
+ */
+export declare function buildParallelExtractBody(urls: readonly string[], mode: ParallelExtractMode, maxUrls?: number): ParallelExtractRequest;
+/**
+ * Join the non-empty Parallel excerpt strings into one markdown block, or
+ * `undefined` when there are no usable excerpts.
+ */
+export declare function joinParallelExcerpts(excerpts: string[] | undefined): string | undefined;
+/**
+ * Pick the markdown content for one Parallel Extract result item under a mode.
+ * `full` prefers the complete `full_content` markdown, falling back to the
+ * joined excerpts when the API returned `null` (the source yielded no full
+ * document); `snippets` always joins the excerpts. Returns `undefined` when no
+ * content is available.
+ */
+export declare function extractParallelContent(item: ParallelExtractResultItem, mode: ParallelExtractMode): string | undefined;
+/**
+ * Locate the result item for a requested URL (trailing-slash-insensitive),
+ * falling back to a single-result response (which always corresponds to the
+ * requested URL for the fetch-provider case). Returns `undefined` when the URL
+ * is not present in `results` (e.g. it was reported in the API's `errors[]`).
+ */
+export declare function findParallelExtractResult(response: ParallelExtractResponse, url: string): ParallelExtractResultItem | undefined;
+/** The resolved Parallel Extract fetch provider configuration. */
+export interface ParallelExtractProviderConfig {
+    enabled: boolean;
+    apiKeyEnv: string;
+    apiKey: string;
+    extractMode?: ParallelExtractMode;
+    timeoutMs?: number;
+}
+/**
+ * The `parallel-extract` fetch provider: retrieves one URL's document as
+ * markdown via the Parallel Extract API. Usable only once an API key resolves:
+ * the literal `apiKey` wins, else the `apiKeyEnv` environment variable. The
+ * provider honours the execution `signal` and its own timeout backstop; any
+ * failure throws a `WebError` (the web seam reports it as a structured error
+ * rather than returning a misleading result).
+ */
+export declare class ParallelExtractProvider implements WebFetchProvider {
+    readonly id = "parallel-extract";
+    private readonly enabled;
+    private readonly apiKey;
+    private readonly mode;
+    private readonly timeoutMs;
+    constructor(config: ParallelExtractProviderConfig);
+    available(): boolean;
+    fetch(request: WebFetchRequest, signal?: AbortSignal): Promise<WebFetchResult>;
+}
+/**
+ * Register the `parallel-extract` fetch provider into the web seam. The seam is
+ * resolved OPTIONALLY (`ctx.get('web')`): when absent (minimal compositions)
+ * this is a no-op, so the bundle keeps loading without a web service. When
+ * present, registration is a reversible effect on this plugin's fiber.
+ *
+ * Selection is the deployment profile's web-seam config
+ * `fetchProvider: 'parallel-extract'` (or `$DSH_WEB_FETCH_PROVIDER`), which is
+ * NOT set here — the profile decides.
+ */
+export declare function registerParallelExtractProvider(ctx: Context, config: ParallelExtractProviderConfig): void;
 /**
  * Config slice available to the RAG section builder.
  */

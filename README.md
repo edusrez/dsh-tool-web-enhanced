@@ -24,6 +24,7 @@ Everything is **optional**: with no modules configured, `web_search` is exactly 
 
 - **Modular per-section architecture** — each search source is a `SearchSection` registered under `sections:`. Native results stay first; every additional module renders as its own section.
 - **Built-in modules** — a **SearXNG** section (rendered as `SearXNG results`), a **RAG** section over local markdown databases (one `RAG — <dbName>` block per database), and a **Parallel** section (Parallel Web Systems Search API, rendered as `Parallel results`).
+- **Alternative `web_fetch` provider** — an **opt-in** `parallel-extract` fetch provider (Parallel Web Systems Extract API) that returns a URL's full document as markdown. Registered into `ctx.web`; selected by the deployment profile's `fetchProvider: 'parallel-extract'`.
 - **Optional `topic` and `sources` parameters** — `topic` forwards a vertical hint to modules that support it; `sources` picks any combination of native / SearXNG / RAG / Parallel (`native`, `searxng`, `rag`, `parallel`, or `all`).
 - **Silent degradation** — a module that is absent, disabled, or unreachable is simply omitted, never an error; results degrade to the remaining sections.
 - **Self-contained drop-in** — the bundle registers the enhanced tools and disables the stock `tool-web` row automatically on install.
@@ -60,6 +61,13 @@ This is a DSH bundle: `package.json` carries `dsh.bundle.patch = ./cordis.patch.
               apiKeyEnv: EMBEDDING_API_KEY
               apiKey: ''
             databases: []
+          # Parallel Extract fetch provider — OPT-IN (enabled: false by default).
+          parallelExtract:
+            enabled: false
+            apiKeyEnv: PARALLEL_API_KEY
+            apiKey: ''
+            extractMode: full
+            timeoutMs: 60000
 
 - id: tool-web
   disabled: true
@@ -93,6 +101,11 @@ The enhanced behaviour lives under one unified `sections:` container. Keys are n
 | `sections.rag.databases[].name`        | string | —                                        | Database (section) name. |
 | `sections.rag.databases[].path`        | string | —                                        | Directory of markdown files to index. |
 | `sections.rag.databases[].topK`        | number | `5`                                      | Results returned per database. |
+| `parallelExtract.enabled`              | boolean| `false`                                  | Register the Parallel Extract fetch provider (`ctx.web`). **OPT-IN.** |
+| `parallelExtract.apiKeyEnv`            | string | `PARALLEL_API_KEY`                       | Env var holding the Parallel API key (same key as `sections.parallel`). |
+| `parallelExtract.apiKey`               | string | `''`                                     | Literal Parallel API key (wins over `apiKeyEnv`). |
+| `parallelExtract.extractMode`          | string | `full`                                   | `full` → the complete markdown document; `snippets` → excerpts only. |
+| `parallelExtract.timeoutMs`            | number | `60000`                                  | Per-call timeout (ms); the Extract API is slow (1–20s). |
 
 The stock `search` / `fetch` keys are kept unchanged for drop-in compatibility.
 
@@ -155,6 +168,30 @@ Body: { "objective": "<query>", "search_queries": ["<query>"], "mode": "fast" }
 The section needs a key to do anything — set `sections.parallel.apiKeyEnv` to an env var (default `PARALLEL_API_KEY`) or `sections.parallel.apiKey` to a literal key. With **no resolvable key the section is silently inert** (returns `undefined` and never calls the API). It is thus entirely **opt-in**: shipping the default config enables it, but nothing is fetched or sent until a key is present in the environment. The key is never committed to any repo file.
 
 By default it requests the fast (`mode: fast`) tier and caps results at `sections.parallel.maxResults` (default `10`, the API's per-call maximum — the API has no pagination). Failures (network, timeout, non-2xx, malformed response) degrade silently to `undefined`, exactly like the SearXNG section.
+
+## Parallel Extract fetch provider
+
+The `web_fetch` tool retrieves a URL through a provider selected by the web seam's `fetchProvider` config (default: the stock HTTP provider). This package registers an **opt-in alternative**: `parallel-extract`, backed by the [Parallel Web Systems Extract API](https://api.parallel.ai/v1/extract). It calls `POST https://api.parallel.ai/v1/extract` with an `x-api-key` header and a body of `{ urls: [<url>], advanced_settings: { full_content: <bool> } }`, and maps the returned document to the fetch result's markdown text body.
+
+```
+POST https://api.parallel.ai/v1/extract
+Headers: x-api-key: <key>, Content-Type: application/json
+Body: { "urls": ["<url>"], "advanced_settings": { "full_content": true } }
+```
+
+It is **fully opt-in and inert by default**: `parallelExtract.enabled` defaults to `false`, so the provider is never registered and the stock `web_fetch` is never displaced. To use it:
+
+1. Enable the provider: `parallelExtract.enabled: true` (with `apiKeyEnv` defaulting to `PARALLEL_API_KEY`, or a literal `apiKey`).
+2. **Pin the web seam to it** in the deployment profile (this package does not, and must not, set the seam config): `fetchProvider: 'parallel-extract'` (or `$DSH_WEB_FETCH_PROVIDER=parallel-extract`).
+
+Without a resolvable key the provider reports itself unavailable (its `available()` is `false`) and a direct call fails cleanly with a structured `WebError`. Failures (non-2xx, malformed response, no result / `errors[]`, timeout) also surface as clean `WebError`s following the other fetch providers' contract — never a misleading result.
+
+`parallelExtract.extractMode` controls what comes back:
+
+- `full` (default): requests `advanced_settings.full_content = true` and returns the complete markdown document (`results[].full_content`), falling back to the joined excerpts when the API returns `null`.
+- `snippets`: leaves `full_content` off and returns the joined `results[].excerpts` — cheaper and faster if you only need fragments.
+
+The API accepts up to 20 URLs per request and charges $1 per 1000 URLs; the provider sends one URL per `web_fetch` call, enforcing the per-request cap in `buildParallelExtractBody`.
 
 ## RAG section
 

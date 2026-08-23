@@ -1,6 +1,6 @@
 import z from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
-import { type ParallelMode, type SectionBlock, type SectionSource } from "./modules.js";
+import { type ParallelExtractMode, type ParallelMode, type SectionBlock, type SectionSource } from "./modules.js";
 /**
  * `dsh-tool-web-enhanced` — a drop-in enhancement of
  * `@deepseek-ai/dsh-tool-web` that ONLY enhances `web_search`.
@@ -18,8 +18,8 @@ import { type ParallelMode, type SectionBlock, type SectionSource } from "./modu
 export declare const name = "tool-web-enhanced";
 /** Services required: the same seam as the stock tool-web plugin. */
 export declare const inject: string[];
-export { buildSections, createParallelSection, createRagSection, createSearxngSection, DEFAULT_SEARXNG_URL, SEARXNG_SNIPPET_MAX_CHARS, TOPIC_CATEGORIES, formatSearxngOutput, mapParallelResults, mapParallelSource, mapSearxngResults, mapSearxngSource, PARALLEL_API_URL, PARALLEL_MODE_DEFAULT, PARALLEL_MAX_RESULTS, PARALLEL_SNIPPET_MAX_CHARS, deriveParallelSearchQueries, fetchParallel, pickParallelSnippet, resolveSourcesParameter, topicToCategory, truncateSnippet, } from "./modules.js";
-export type { ParallelMode, SectionBlock, SectionRunContext, SectionSource, SearchSection, } from "./modules.js";
+export { buildSections, createParallelSection, createRagSection, createSearxngSection, DEFAULT_SEARXNG_URL, SEARXNG_SNIPPET_MAX_CHARS, TOPIC_CATEGORIES, formatSearxngOutput, mapParallelResults, mapParallelSource, mapSearxngResults, mapSearxngSource, PARALLEL_API_URL, PARALLEL_MODE_DEFAULT, PARALLEL_MAX_RESULTS, PARALLEL_SNIPPET_MAX_CHARS, deriveParallelSearchQueries, fetchParallel, pickParallelSnippet, resolveSourcesParameter, topicToCategory, truncateSnippet, buildParallelExtractBody, joinParallelExcerpts, extractParallelContent, findParallelExtractResult, registerParallelExtractProvider, ParallelExtractProvider, PARALLEL_EXTRACT_API_URL, PARALLEL_EXTRACT_MAX_URLS, PARALLEL_EXTRACT_MODE_DEFAULT, PARALLEL_EXTRACT_PROVIDER_ID, PARALLEL_EXTRACT_TIMEOUT_MS, } from "./modules.js";
+export type { ParallelExtractMode, ParallelExtractProviderConfig, ParallelExtractRequest, ParallelExtractResponse, ParallelExtractResultItem, ParallelMode, SectionBlock, SectionRunContext, SectionSource, SearchSection, } from "./modules.js";
 /**
  * Plugin configuration. Extends the stock `dsh-tool-web` keys (which keep
  * identical names and defaults) with a unified `sections` container replacing
@@ -185,6 +185,25 @@ export declare const Config: z<Schemastery.ObjectS<{
             }>[]>;
         }>>;
     }>>;
+    /**
+     * Parallel Extract fetch provider (ctx.web `fetchProvider: 'parallel-extract'`).
+     * OPT-IN: `enabled` defaults to false so the provider is never registered
+     * (and the stock `web_fetch` is never affected) unless the deployment opts
+     * in AND pins the seam to it.
+     */
+    parallelExtract: z<Schemastery.ObjectS<{
+        enabled: z<boolean, boolean>;
+        apiKeyEnv: z<string, string>;
+        apiKey: z<string, string>;
+        extractMode: z<"full" | "snippets", "full" | "snippets">;
+        timeoutMs: z<number, number>;
+    }>, Schemastery.ObjectT<{
+        enabled: z<boolean, boolean>;
+        apiKeyEnv: z<string, string>;
+        apiKey: z<string, string>;
+        extractMode: z<"full" | "snippets", "full" | "snippets">;
+        timeoutMs: z<number, number>;
+    }>>;
 }>, Schemastery.ObjectT<{
     search: z<boolean, boolean>;
     fetch: z<boolean, boolean>;
@@ -345,6 +364,25 @@ export declare const Config: z<Schemastery.ObjectS<{
             }>[]>;
         }>>;
     }>>;
+    /**
+     * Parallel Extract fetch provider (ctx.web `fetchProvider: 'parallel-extract'`).
+     * OPT-IN: `enabled` defaults to false so the provider is never registered
+     * (and the stock `web_fetch` is never affected) unless the deployment opts
+     * in AND pins the seam to it.
+     */
+    parallelExtract: z<Schemastery.ObjectS<{
+        enabled: z<boolean, boolean>;
+        apiKeyEnv: z<string, string>;
+        apiKey: z<string, string>;
+        extractMode: z<"full" | "snippets", "full" | "snippets">;
+        timeoutMs: z<number, number>;
+    }>, Schemastery.ObjectT<{
+        enabled: z<boolean, boolean>;
+        apiKeyEnv: z<string, string>;
+        apiKey: z<string, string>;
+        extractMode: z<"full" | "snippets", "full" | "snippets">;
+        timeoutMs: z<number, number>;
+    }>>;
 }>>;
 /** The resolved plugin configuration shape (after schema defaults are applied). */
 export interface EnhancedConfig {
@@ -383,6 +421,13 @@ export interface EnhancedConfig {
                 topK: number;
             }[];
         };
+    };
+    parallelExtract: {
+        enabled: boolean;
+        apiKeyEnv: string;
+        apiKey: string;
+        extractMode: ParallelExtractMode;
+        timeoutMs: number;
     };
 }
 /** The resolved RAG config shape produced by {@link resolveRag}. */

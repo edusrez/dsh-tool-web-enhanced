@@ -17,7 +17,23 @@ import {
   createParallelSection,
   createRagSection,
   createSearxngSection,
+  registerParallelExtractProvider,
   resolveSourcesParameter,
+  buildParallelExtractBody,
+  joinParallelExcerpts,
+  extractParallelContent,
+  findParallelExtractResult,
+  ParallelExtractProvider,
+  PARALLEL_EXTRACT_PROVIDER_ID,
+  PARALLEL_EXTRACT_API_URL,
+  PARALLEL_EXTRACT_MAX_URLS,
+  PARALLEL_EXTRACT_MODE_DEFAULT,
+  PARALLEL_EXTRACT_TIMEOUT_MS,
+  type ParallelExtractMode,
+  type ParallelExtractProviderConfig,
+  type ParallelExtractRequest,
+  type ParallelExtractResponse,
+  type ParallelExtractResultItem,
   type ParallelMode,
   type SectionBlock,
   type SearchSection,
@@ -75,9 +91,25 @@ export {
   resolveSourcesParameter,
   topicToCategory,
   truncateSnippet,
+  buildParallelExtractBody,
+  joinParallelExcerpts,
+  extractParallelContent,
+  findParallelExtractResult,
+  registerParallelExtractProvider,
+  ParallelExtractProvider,
+  PARALLEL_EXTRACT_API_URL,
+  PARALLEL_EXTRACT_MAX_URLS,
+  PARALLEL_EXTRACT_MODE_DEFAULT,
+  PARALLEL_EXTRACT_PROVIDER_ID,
+  PARALLEL_EXTRACT_TIMEOUT_MS,
 } from "./modules.js";
 
 export type {
+  ParallelExtractMode,
+  ParallelExtractProviderConfig,
+  ParallelExtractRequest,
+  ParallelExtractResponse,
+  ParallelExtractResultItem,
   ParallelMode,
   SectionBlock,
   SectionRunContext,
@@ -131,6 +163,19 @@ export const Config = z.object({
       })).default([]),
     }).default({} as any),
   }).default({} as any),
+  /**
+   * Parallel Extract fetch provider (ctx.web `fetchProvider: 'parallel-extract'`).
+   * OPT-IN: `enabled` defaults to false so the provider is never registered
+   * (and the stock `web_fetch` is never affected) unless the deployment opts
+   * in AND pins the seam to it.
+   */
+  parallelExtract: z.object({
+    enabled: z.boolean().default(false),
+    apiKeyEnv: z.string().default('PARALLEL_API_KEY'),
+    apiKey: z.string().default(''),
+    extractMode: z.union([z.const('full'), z.const('snippets')]).default('full'),
+    timeoutMs: z.number().default(PARALLEL_EXTRACT_TIMEOUT_MS),
+  }).default({} as any),
 });
 
 /** The resolved plugin configuration shape (after schema defaults are applied). */
@@ -163,6 +208,13 @@ export interface EnhancedConfig {
       };
       databases: { name: string; path: string; topK: number }[];
     };
+  };
+  parallelExtract: {
+    enabled: boolean;
+    apiKeyEnv: string;
+    apiKey: string;
+    extractMode: ParallelExtractMode;
+    timeoutMs: number;
   };
 }
 
@@ -631,6 +683,19 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
       },
     }));
   }
+
+  // Register the optional Parallel Extract fetch provider into the web seam.
+  // Selection is the deployment profile's `fetchProvider: 'parallel-extract'`
+  // (or $DSH_WEB_FETCH_PROVIDER) — NOT set here. `enabled` defaults to false so
+  // the stock `web_fetch` provider is never displaced unless the deployment
+  // opts in.
+  registerParallelExtractProvider(ctx, {
+    enabled: resolved.parallelExtract.enabled,
+    apiKeyEnv: resolved.parallelExtract.apiKeyEnv,
+    apiKey: resolved.parallelExtract.apiKey,
+    extractMode: resolved.parallelExtract.extractMode,
+    timeoutMs: resolved.parallelExtract.timeoutMs,
+  });
 
   if (resolved.search) {
     applyEnhancedWebSearchTool(

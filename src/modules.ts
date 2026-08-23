@@ -17,6 +17,9 @@
 
 import { RagEngine, type RagDatabaseConfig, type RagSection } from "./rag.js";
 import { DEFAULT_WEB_TOOL_TIMEOUT_MS } from "@deepseek-ai/dsh-tool-web";
+import { WebError } from "@deepseek-ai/dsh-web";
+import type { WebFetchProvider, WebFetchRequest, WebFetchResult } from "@deepseek-ai/dsh-web";
+import type { Context } from "@deepseek-ai/cordis";
 
 // ---------------------------------------------------------------------------
 // Section interface
@@ -483,6 +486,321 @@ export function createParallelSection(config: {
       return [{ name: "Parallel results", sources }];
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Parallel Extract fetch provider (Parallel Web Systems Extract API)
+// ---------------------------------------------------------------------------
+
+/** The registered provider id; select it with the web seam `fetchProvider` config. */
+export const PARALLEL_EXTRACT_PROVIDER_ID = "parallel-extract";
+
+/** Parallel Extract API endpoint. */
+export const PARALLEL_EXTRACT_API_URL = "https://api.parallel.ai/v1/extract";
+
+/** The maximum number of URLs the Parallel Extract API accepts per request. */
+export const PARALLEL_EXTRACT_MAX_URLS = 20;
+
+/** Default `extractMode`: request the complete markdown document (`full_content`). */
+export const PARALLEL_EXTRACT_MODE_DEFAULT: ParallelExtractMode = "full";
+
+/** Default timeout (ms) for a Parallel Extract call — the API is slow (1–20s). */
+export const PARALLEL_EXTRACT_TIMEOUT_MS = 60_000;
+
+/**
+ * How much of the document the Parallel Extract API returns. `full` requests
+ * the complete markdown document (`advanced_settings.full_content`); `snippets`
+ * leaves it off (excerpts only, cheaper and faster).
+ */
+export type ParallelExtractMode = "full" | "snippets";
+
+/** One raw Parallel Extract result item (the fields we consume). */
+export interface ParallelExtractResultItem {
+  url?: string;
+  title?: string;
+  publish_date?: string | null;
+  excerpts?: string[];
+  /** The complete markdown document when `full_content` was requested. */
+  full_content?: string | null;
+}
+
+/** The parsed Parallel Extract API envelope (only the fields we read). */
+export interface ParallelExtractResponse {
+  results?: ParallelExtractResultItem[];
+  errors?: unknown[];
+  extract_id?: string;
+  warnings?: unknown;
+}
+
+/** The Parallel Extract API request body. */
+export interface ParallelExtractRequest {
+  urls: string[];
+  advanced_settings: { full_content: boolean };
+}
+
+/**
+ * Build the Parallel Extract request body for a batch of URLs, enforcing the
+ * API's ≤ {@link PARALLEL_EXTRACT_MAX_URLS} per-request cap. `full` requests
+ * the complete markdown document; `snippets` leaves `full_content` off
+ * (excerpts only). Throws a `WebError` when the batch is empty or over the cap.
+ */
+export function buildParallelExtractBody(
+  urls: readonly string[],
+  mode: ParallelExtractMode,
+  maxUrls: number = PARALLEL_EXTRACT_MAX_URLS,
+): ParallelExtractRequest {
+  if (urls.length === 0) {
+    throw new WebError("parallel-extract: at least one URL is required", "WEB_PROVIDER_ERROR");
+  }
+  if (urls.length > maxUrls) {
+    throw new WebError(
+      `parallel-extract: at most ${maxUrls} URLs per Extract request (got ${urls.length})`,
+      "WEB_PROVIDER_ERROR",
+    );
+  }
+  return {
+    urls: [...urls],
+    advanced_settings: { full_content: mode === "full" },
+  };
+}
+
+/**
+ * Join the non-empty Parallel excerpt strings into one markdown block, or
+ * `undefined` when there are no usable excerpts.
+ */
+export function joinParallelExcerpts(excerpts: string[] | undefined): string | undefined {
+  if (!Array.isArray(excerpts) || excerpts.length === 0) return undefined;
+  const parts = excerpts.filter((e): e is string => typeof e === "string" && e.trim().length > 0);
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+/**
+ * Pick the markdown content for one Parallel Extract result item under a mode.
+ * `full` prefers the complete `full_content` markdown, falling back to the
+ * joined excerpts when the API returned `null` (the source yielded no full
+ * document); `snippets` always joins the excerpts. Returns `undefined` when no
+ * content is available.
+ */
+export function extractParallelContent(
+  item: ParallelExtractResultItem,
+  mode: ParallelExtractMode,
+): string | undefined {
+  if (mode === "full") {
+    if (typeof item.full_content === "string" && item.full_content.length > 0) {
+      return item.full_content;
+    }
+    return joinParallelExcerpts(item.excerpts);
+  }
+  return joinParallelExcerpts(item.excerpts);
+}
+
+/**
+ * Locate the result item for a requested URL (trailing-slash-insensitive),
+ * falling back to a single-result response (which always corresponds to the
+ * requested URL for the fetch-provider case). Returns `undefined` when the URL
+ * is not present in `results` (e.g. it was reported in the API's `errors[]`).
+ */
+export function findParallelExtractResult(
+  response: ParallelExtractResponse,
+  url: string,
+): ParallelExtractResultItem | undefined {
+  if (!Array.isArray(response.results) || response.results.length === 0) return undefined;
+  const normalize = (u: string): string => u.replace(/\/+$/, "").trim();
+  const target = normalize(url);
+  for (const item of response.results) {
+    if (typeof item.url === "string" && normalize(item.url) === target) return item;
+  }
+  return response.results.length === 1 ? response.results[0] : undefined;
+}
+
+/**
+ * Validate a target URL for extraction (http/https only, no credentials,
+ * bounded length) — mirrors the other fetch providers' URL hygiene so the
+ * provider never forwards a non-web target to the Parallel Extract API.
+ */
+function validateExtractUrl(input: string, maxUrlLength = 2048): string {
+  if (input.length > maxUrlLength) {
+    throw new WebError(`URL exceeds the maximum length of ${maxUrlLength}`, "WEB_INVALID_URL");
+  }
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch (error) {
+    throw new WebError(`invalid URL: ${input}`, "WEB_INVALID_URL", { cause: error });
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new WebError(
+      `unsupported URL scheme "${url.protocol}" (only http and https are allowed)`,
+      "WEB_INVALID_URL",
+    );
+  }
+  if (url.username.length > 0 || url.password.length > 0) {
+    throw new WebError("credentials in URLs are not allowed", "WEB_BLOCKED_URL");
+  }
+  return url.toString();
+}
+
+/**
+ * Compose a timeout onto `signal`: a derived signal that aborts after
+ * `timeoutMs` OR on the upstream `signal`, whichever comes first. The returned
+ * `dispose()` (idempotent) releases the timer + listener on every path.
+ */
+function withExtractTimeout(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const source = signal ?? new AbortController().signal;
+  const timer = setTimeout(
+    () => controller.abort(new WebError("parallel-extract timed out", "WEB_FETCH_TIMEOUT")),
+    timeoutMs,
+  );
+  const relay = () => {
+    clearTimeout(timer);
+    if (controller.signal.aborted) return;
+    controller.abort(source.reason ?? new Error("aborted"));
+  };
+  source.addEventListener("abort", relay, { once: true });
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(timer);
+    source.removeEventListener("abort", relay);
+  };
+  return { signal: controller.signal, dispose };
+}
+
+/** Translate a throw into the right `WebError` (timeout vs abort vs provider). */
+function translateExtractError(error: unknown, signal: AbortSignal, timeoutMs: number): WebError {
+  if (error instanceof WebError) {
+    if (error.code === "WEB_FETCH_TIMEOUT") {
+      return new WebError(
+        `parallel-extract timed out after ${timeoutMs} ms`,
+        "WEB_FETCH_TIMEOUT",
+        { cause: error },
+      );
+    }
+    return error;
+  }
+  if (signal.aborted) {
+    return new WebError("web fetch aborted", "WEB_ABORTED", { cause: error });
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return new WebError(`parallel-extract fetch failed: ${message}`, "WEB_PROVIDER_ERROR", { cause: error });
+}
+
+/** The resolved Parallel Extract fetch provider configuration. */
+export interface ParallelExtractProviderConfig {
+  enabled: boolean;
+  apiKeyEnv: string;
+  apiKey: string;
+  extractMode?: ParallelExtractMode;
+  timeoutMs?: number;
+}
+
+/**
+ * The `parallel-extract` fetch provider: retrieves one URL's document as
+ * markdown via the Parallel Extract API. Usable only once an API key resolves:
+ * the literal `apiKey` wins, else the `apiKeyEnv` environment variable. The
+ * provider honours the execution `signal` and its own timeout backstop; any
+ * failure throws a `WebError` (the web seam reports it as a structured error
+ * rather than returning a misleading result).
+ */
+export class ParallelExtractProvider implements WebFetchProvider {
+  readonly id = PARALLEL_EXTRACT_PROVIDER_ID;
+
+  private readonly enabled: boolean;
+  private readonly apiKey: string;
+  private readonly mode: ParallelExtractMode;
+  private readonly timeoutMs: number;
+
+  constructor(config: ParallelExtractProviderConfig) {
+    this.enabled = config.enabled;
+    this.apiKey = config.apiKey.trim().length > 0
+      ? config.apiKey
+      : (process.env[config.apiKeyEnv] ?? "");
+    this.mode = config.extractMode ?? PARALLEL_EXTRACT_MODE_DEFAULT;
+    this.timeoutMs = config.timeoutMs ?? PARALLEL_EXTRACT_TIMEOUT_MS;
+  }
+
+  available(): boolean {
+    return this.enabled && this.apiKey.length > 0;
+  }
+
+  async fetch(request: WebFetchRequest, signal?: AbortSignal): Promise<WebFetchResult> {
+    if (signal?.aborted) throw new WebError("web fetch aborted", "WEB_ABORTED");
+    if (!this.enabled) {
+      throw new WebError("parallel-extract: provider is disabled", "WEB_PROVIDER_ERROR");
+    }
+    if (this.apiKey.length === 0) {
+      throw new WebError(
+        "parallel-extract: no API key resolved (set the literal apiKey or the apiKeyEnv variable)",
+        "WEB_PROVIDER_ERROR",
+      );
+    }
+    const target = validateExtractUrl(request.url);
+    const body = buildParallelExtractBody([target], this.mode);
+    const { signal: timeoutSignal, dispose } = withExtractTimeout(signal, this.timeoutMs);
+    try {
+      const response = await fetch(PARALLEL_EXTRACT_API_URL, {
+        method: "POST",
+        signal: timeoutSignal,
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.apiKey,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new WebError(`parallel-extract request failed: HTTP ${response.status}`, "WEB_PROVIDER_ERROR");
+      }
+      const json = (await response.json()) as ParallelExtractResponse;
+      if (typeof json !== "object" || json === null || !Array.isArray(json.results)) {
+        throw new WebError("parallel-extract: malformed Extract response (missing results array)", "WEB_PROVIDER_ERROR");
+      }
+      const item = findParallelExtractResult(json, target);
+      if (item === undefined) {
+        throw new WebError(`parallel-extract: no result for ${target}`, "WEB_PROVIDER_ERROR");
+      }
+      const content = extractParallelContent(item, this.mode);
+      if (content === undefined) {
+        throw new WebError(`parallel-extract: no content for ${target}`, "WEB_PROVIDER_ERROR");
+      }
+      return {
+        url: item.url ?? target,
+        statusCode: 200,
+        body: { kind: "text", content },
+        truncated: false,
+      };
+    } catch (error) {
+      throw translateExtractError(error, timeoutSignal, this.timeoutMs);
+    } finally {
+      dispose();
+    }
+  }
+}
+
+/**
+ * Register the `parallel-extract` fetch provider into the web seam. The seam is
+ * resolved OPTIONALLY (`ctx.get('web')`): when absent (minimal compositions)
+ * this is a no-op, so the bundle keeps loading without a web service. When
+ * present, registration is a reversible effect on this plugin's fiber.
+ *
+ * Selection is the deployment profile's web-seam config
+ * `fetchProvider: 'parallel-extract'` (or `$DSH_WEB_FETCH_PROVIDER`), which is
+ * NOT set here — the profile decides.
+ */
+export function registerParallelExtractProvider(
+  ctx: Context,
+  config: ParallelExtractProviderConfig,
+): void {
+  if (!config.enabled) return;
+  const web = ctx.get("web") as { registerFetchProvider(provider: WebFetchProvider): () => void } | undefined;
+  if (web === undefined) return;
+  const provider = new ParallelExtractProvider(config);
+  const disposer = web.registerFetchProvider(provider);
+  ctx.effect(() => disposer, "parallel-extract web-fetch provider");
 }
 
 // ---------------------------------------------------------------------------

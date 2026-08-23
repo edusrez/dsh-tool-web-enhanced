@@ -29,6 +29,17 @@
               baseURL: https://api.deepinfra.com/v1/openai
               localModel: Xenova/bge-small-en-v1.5
             databases: []
+          # Parallel Extract fetch provider (ctx.web `fetchProvider: 'parallel-extract'`).
+          # OPT-IN: `enabled: false` by default — the stock `web_fetch` provider is
+          # never displaced. To route `web_fetch` through the Parallel Extract API,
+          # set `enabled: true` here AND pin the web seam `fetchProvider: 'parallel-extract'`
+          # in the deployment profile (NOT here — the profile decides).
+          parallelExtract:
+            enabled: false
+            apiKeyEnv: PARALLEL_API_KEY
+            apiKey: ''
+            extractMode: full
+            timeoutMs: 60000
 
 - id: tool-web
   disabled: true
