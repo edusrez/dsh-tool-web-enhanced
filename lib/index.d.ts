@@ -1,6 +1,6 @@
 import z from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
-import { type SectionBlock, type SectionSource } from "./modules.js";
+import { type ParallelMode, type SectionBlock, type SectionSource } from "./modules.js";
 /**
  * `dsh-tool-web-enhanced` — a drop-in enhancement of
  * `@deepseek-ai/dsh-tool-web` that ONLY enhances `web_search`.
@@ -18,8 +18,8 @@ import { type SectionBlock, type SectionSource } from "./modules.js";
 export declare const name = "tool-web-enhanced";
 /** Services required: the same seam as the stock tool-web plugin. */
 export declare const inject: string[];
-export { buildSections, createRagSection, createSearxngSection, DEFAULT_SEARXNG_URL, SEARXNG_SNIPPET_MAX_CHARS, TOPIC_CATEGORIES, formatSearxngOutput, mapSearxngResults, mapSearxngSource, resolveSourcesParameter, topicToCategory, truncateSnippet, } from "./modules.js";
-export type { SectionBlock, SectionRunContext, SectionSource, SearchSection, } from "./modules.js";
+export { buildSections, createParallelSection, createRagSection, createSearxngSection, DEFAULT_SEARXNG_URL, SEARXNG_SNIPPET_MAX_CHARS, TOPIC_CATEGORIES, formatSearxngOutput, mapParallelResults, mapParallelSource, mapSearxngResults, mapSearxngSource, PARALLEL_API_URL, PARALLEL_MODE_DEFAULT, PARALLEL_MAX_RESULTS, PARALLEL_SNIPPET_MAX_CHARS, deriveParallelSearchQueries, fetchParallel, pickParallelSnippet, resolveSourcesParameter, topicToCategory, truncateSnippet, } from "./modules.js";
+export type { ParallelMode, SectionBlock, SectionRunContext, SectionSource, SearchSection, } from "./modules.js";
 /**
  * Plugin configuration. Extends the stock `dsh-tool-web` keys (which keep
  * identical names and defaults) with a unified `sections` container replacing
@@ -39,6 +39,19 @@ export declare const Config: z<Schemastery.ObjectS<{
         }>, Schemastery.ObjectT<{
             enabled: z<boolean, boolean>;
             url: z<string, string>;
+        }>>;
+        parallel: z<Schemastery.ObjectS<{
+            enabled: z<boolean, boolean>;
+            apiKeyEnv: z<string, string>;
+            apiKey: z<string, string>;
+            mode: z<"turbo" | "fast" | "basic" | "advanced", "turbo" | "fast" | "basic" | "advanced">;
+            maxResults: z<number, number>;
+        }>, Schemastery.ObjectT<{
+            enabled: z<boolean, boolean>;
+            apiKeyEnv: z<string, string>;
+            apiKey: z<string, string>;
+            mode: z<"turbo" | "fast" | "basic" | "advanced", "turbo" | "fast" | "basic" | "advanced">;
+            maxResults: z<number, number>;
         }>>;
         rag: z<Schemastery.ObjectS<{
             enabled: z<boolean, boolean>;
@@ -102,6 +115,19 @@ export declare const Config: z<Schemastery.ObjectS<{
         }>, Schemastery.ObjectT<{
             enabled: z<boolean, boolean>;
             url: z<string, string>;
+        }>>;
+        parallel: z<Schemastery.ObjectS<{
+            enabled: z<boolean, boolean>;
+            apiKeyEnv: z<string, string>;
+            apiKey: z<string, string>;
+            mode: z<"turbo" | "fast" | "basic" | "advanced", "turbo" | "fast" | "basic" | "advanced">;
+            maxResults: z<number, number>;
+        }>, Schemastery.ObjectT<{
+            enabled: z<boolean, boolean>;
+            apiKeyEnv: z<string, string>;
+            apiKey: z<string, string>;
+            mode: z<"turbo" | "fast" | "basic" | "advanced", "turbo" | "fast" | "basic" | "advanced">;
+            maxResults: z<number, number>;
         }>>;
         rag: z<Schemastery.ObjectS<{
             enabled: z<boolean, boolean>;
@@ -174,6 +200,19 @@ export declare const Config: z<Schemastery.ObjectS<{
             enabled: z<boolean, boolean>;
             url: z<string, string>;
         }>>;
+        parallel: z<Schemastery.ObjectS<{
+            enabled: z<boolean, boolean>;
+            apiKeyEnv: z<string, string>;
+            apiKey: z<string, string>;
+            mode: z<"turbo" | "fast" | "basic" | "advanced", "turbo" | "fast" | "basic" | "advanced">;
+            maxResults: z<number, number>;
+        }>, Schemastery.ObjectT<{
+            enabled: z<boolean, boolean>;
+            apiKeyEnv: z<string, string>;
+            apiKey: z<string, string>;
+            mode: z<"turbo" | "fast" | "basic" | "advanced", "turbo" | "fast" | "basic" | "advanced">;
+            maxResults: z<number, number>;
+        }>>;
         rag: z<Schemastery.ObjectS<{
             enabled: z<boolean, boolean>;
             storePath: z<string, string>;
@@ -236,6 +275,19 @@ export declare const Config: z<Schemastery.ObjectS<{
         }>, Schemastery.ObjectT<{
             enabled: z<boolean, boolean>;
             url: z<string, string>;
+        }>>;
+        parallel: z<Schemastery.ObjectS<{
+            enabled: z<boolean, boolean>;
+            apiKeyEnv: z<string, string>;
+            apiKey: z<string, string>;
+            mode: z<"turbo" | "fast" | "basic" | "advanced", "turbo" | "fast" | "basic" | "advanced">;
+            maxResults: z<number, number>;
+        }>, Schemastery.ObjectT<{
+            enabled: z<boolean, boolean>;
+            apiKeyEnv: z<string, string>;
+            apiKey: z<string, string>;
+            mode: z<"turbo" | "fast" | "basic" | "advanced", "turbo" | "fast" | "basic" | "advanced">;
+            maxResults: z<number, number>;
         }>>;
         rag: z<Schemastery.ObjectS<{
             enabled: z<boolean, boolean>;
@@ -306,6 +358,13 @@ export interface EnhancedConfig {
         searxng: {
             enabled: boolean;
             url: string;
+        };
+        parallel: {
+            enabled: boolean;
+            apiKeyEnv: string;
+            apiKey: string;
+            mode: ParallelMode;
+            maxResults: number;
         };
         rag: {
             enabled: boolean;

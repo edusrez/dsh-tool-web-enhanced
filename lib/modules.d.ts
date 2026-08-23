@@ -136,6 +136,76 @@ export declare function createSearxngSection(config: {
     url: string;
     timeoutMs?: number;
 }): SearchSection;
+/** Parallel Search API endpoint. */
+export declare const PARALLEL_API_URL = "https://api.parallel.ai/v1/search";
+/** Search `mode` values accepted by the Parallel API. */
+export type ParallelMode = "turbo" | "fast" | "basic" | "advanced";
+/** Default search mode (cheap/fast tier) used when no `mode` is configured. */
+export declare const PARALLEL_MODE_DEFAULT: ParallelMode;
+/** Maximum snippet length (chars) retained from a Parallel result excerpt. */
+export declare const PARALLEL_SNIPPET_MAX_CHARS = 600;
+/** The maximum number of results the Parallel API returns per request. */
+export declare const PARALLEL_MAX_RESULTS = 10;
+/**
+ * Derive the `search_queries` array sent to the Parallel API from a single
+ * `web_search` `query`. The API accepts a single-query array; if a live
+ * integration shows that it is rejected, switch to the deterministic
+ * two-query fallback `[query, query + ' — recent news and analysis']` here.
+ */
+export declare function deriveParallelSearchQueries(query: string): string[];
+/** The raw Parallel result-item shape (the fields we consume). */
+export interface ParallelResultItem {
+    url?: string;
+    title?: string;
+    publish_date?: string | null;
+    excerpts?: string[];
+}
+/** The parsed Parallel Search API envelope (only the fields we read). */
+export interface ParallelResponse {
+    results?: ParallelResultItem[];
+}
+/**
+ * Pick the snippet for a Parallel result: the densest (longest) excerpt,
+ * truncated to {@link PARALLEL_SNIPPET_MAX_CHARS}; falls back to the first
+ * excerpt when present, or `undefined` when there are no excerpts.
+ */
+export declare function pickParallelSnippet(excerpts: string[] | undefined): string | undefined;
+/**
+ * Map one raw Parallel result item to a {@link SectionSource} (url, title,
+ * snippet from the densest excerpt); skips a result that lacks a usable URL.
+ */
+export declare function mapParallelSource(item: ParallelResultItem): SectionSource | undefined;
+/**
+ * Map a Parallel result set to capped, canonical source objects. Skips
+ * results missing a usable URL; caps to `maxResults` in result order.
+ */
+export declare function mapParallelResults(items: readonly ParallelResultItem[] | undefined, maxResults: number): SectionSource[];
+/**
+ * Call the Parallel Search API once. Never throws: any failure (network,
+ * timeout, non-2xx, invalid JSON) resolves to `undefined` so the caller can
+ * silently omit the section. Bounded by a local `timeoutMs` timer composed
+ * with the caller's `signal`, exactly like {@link fetchSearxng}.
+ */
+export declare function fetchParallel(objective: string, searchQueries: string[], mode: ParallelMode, apiKey: string, signal: AbortSignal | undefined, timeoutMs: number): Promise<ParallelResponse | undefined>;
+/**
+ * Build the Parallel search section.
+ *
+ * The section is inert (returns `undefined` without fetching) when no API key
+ * resolves: the literal `apiKey` wins, else the `apiKeyEnv` environment
+ * variable. `mode` defaults to {@link PARALLEL_MODE_DEFAULT} (`fast`).
+ *
+ * @param config - the Parallel config slice: `{ enabled, apiKey, apiKeyEnv,
+ *   mode?, maxResults? }` plus an optional internal `timeoutMs` bound.
+ * @returns the configured Parallel section.
+ */
+export declare function createParallelSection(config: {
+    enabled: boolean;
+    apiKey: string;
+    apiKeyEnv: string;
+    mode?: ParallelMode;
+    maxResults?: number;
+    timeoutMs?: number;
+}): SearchSection;
 /**
  * Config slice available to the RAG section builder.
  */
@@ -186,6 +256,13 @@ export interface SectionsConfig {
         enabled?: boolean;
         databases?: RagDatabaseConfig[];
     };
+    parallel?: {
+        enabled?: boolean;
+        apiKey?: string;
+        apiKeyEnv?: string;
+        mode?: ParallelMode;
+        maxResults?: number;
+    };
 }
 /**
  * Resolve the enabled sections from the `sections` config container, in CONFIG
@@ -200,4 +277,5 @@ export interface SectionsConfig {
 export declare function buildSections(config: SectionsConfig, opts?: {
     ragEngine?: RagEngine | undefined;
     searxngTimeoutMs?: number;
+    parallelTimeoutMs?: number;
 }): SearchSection[];

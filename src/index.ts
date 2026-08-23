@@ -14,9 +14,11 @@ import {
 import { RagEngine } from "./rag.js";
 import {
   buildSections,
+  createParallelSection,
   createRagSection,
   createSearxngSection,
   resolveSourcesParameter,
+  type ParallelMode,
   type SectionBlock,
   type SearchSection,
   type SectionSource,
@@ -52,20 +54,31 @@ export const inject = ["tools", "web", "systemPrompt"];
 
 export {
   buildSections,
+  createParallelSection,
   createRagSection,
   createSearxngSection,
   DEFAULT_SEARXNG_URL,
   SEARXNG_SNIPPET_MAX_CHARS,
   TOPIC_CATEGORIES,
   formatSearxngOutput,
+  mapParallelResults,
+  mapParallelSource,
   mapSearxngResults,
   mapSearxngSource,
+  PARALLEL_API_URL,
+  PARALLEL_MODE_DEFAULT,
+  PARALLEL_MAX_RESULTS,
+  PARALLEL_SNIPPET_MAX_CHARS,
+  deriveParallelSearchQueries,
+  fetchParallel,
+  pickParallelSnippet,
   resolveSourcesParameter,
   topicToCategory,
   truncateSnippet,
 } from "./modules.js";
 
 export type {
+  ParallelMode,
   SectionBlock,
   SectionRunContext,
   SectionSource,
@@ -92,6 +105,13 @@ export const Config = z.object({
     searxng: z.object({
       enabled: z.boolean().default(true),
       url: z.string().default('http://127.0.0.1:8080'),
+    }).default({} as any),
+    parallel: z.object({
+      enabled: z.boolean().default(true),
+      apiKeyEnv: z.string().default('PARALLEL_API_KEY'),
+      apiKey: z.string().default(''),
+      mode: z.union([z.const('turbo'), z.const('fast'), z.const('basic'), z.const('advanced')]).default('fast'),
+      maxResults: z.number().default(10),
     }).default({} as any),
     rag: z.object({
       enabled: z.boolean().default(true),
@@ -123,6 +143,13 @@ export interface EnhancedConfig {
   fetchMaxOutputChars: number;
   sections: {
     searxng: { enabled: boolean; url: string };
+    parallel: {
+      enabled: boolean;
+      apiKeyEnv: string;
+      apiKey: string;
+      mode: ParallelMode;
+      maxResults: number;
+    };
     rag: {
       enabled: boolean;
       storePath: string;
@@ -563,8 +590,12 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
 
   // Build the enabled sections once at boot (in config order).
   const sections = buildSections(
-    { searxng: resolved.sections.searxng, rag: { enabled: rag.enabled, databases: rag.databases } },
-    { ragEngine, searxngTimeoutMs: resolved.searchTimeoutMs },
+    {
+      searxng: resolved.sections.searxng,
+      rag: { enabled: rag.enabled, databases: rag.databases },
+      parallel: resolved.sections.parallel,
+    },
+    { ragEngine, searxngTimeoutMs: resolved.searchTimeoutMs, parallelTimeoutMs: resolved.searchTimeoutMs },
   );
 
   // The RAG section is the only one exposing an index accessor.

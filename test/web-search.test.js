@@ -10,13 +10,21 @@ import {
   topicToCategory,
   mapSearxngSource,
   mapSearxngResults,
+  mapParallelSource,
+  mapParallelResults,
+  pickParallelSnippet,
+  deriveParallelSearchQueries,
   truncateSnippet,
   buildSections,
   createSearxngSection,
+  createParallelSection,
   createRagSection,
   resolveSourcesParameter,
   formatSearxngOutput,
   formatEnhancedSearchOutput,
+  PARALLEL_API_URL,
+  PARALLEL_MODE_DEFAULT,
+  PARALLEL_SNIPPET_MAX_CHARS,
 } from "../lib/index.js";
 
 // ---------------------------------------------------------------------------
@@ -484,4 +492,214 @@ test("execute-level degrade: one section that throws is omitted, healthy section
   const text = formatEnhancedSearchOutput({ sources: [], truncated: false, sections: blocks });
   assert.ok(text.includes("## SearXNG results"));
   assert.ok(!text.includes("## RAG"), "throwing section absent from render");
+});
+
+// ---------------------------------------------------------------------------
+// Parallel section (attempt to run / map)
+// ---------------------------------------------------------------------------
+
+test("deriveParallelSearchQueries returns the query as a single-element array", () => {
+  assert.deepEqual(deriveParallelSearchQueries("latest ai news"), ["latest ai news"]);
+});
+
+test("pickParallelSnippet picks the densest excerpt and truncates it", () => {
+  const first = "short";
+  const dense = "x".repeat(900);
+  assert.equal(pickParallelSnippet([first, dense]), "x".repeat(PARALLEL_SNIPPET_MAX_CHARS - 1) + "…");
+  assert.equal(pickParallelSnippet([first]), first);
+  assert.equal(pickParallelSnippet([]), undefined);
+  assert.equal(pickParallelSnippet(undefined), undefined);
+});
+
+test("mapParallelSource maps url/title/snippet and skips missing url", () => {
+  const mapped = mapParallelSource({
+    url: "https://parallel.example/a",
+    title: "Example",
+    excerpts: ["a dense excerpt here"],
+    publish_date: "2026-04-24",
+  });
+  assert.deepEqual(mapped, {
+    url: "https://parallel.example/a",
+    title: "Example",
+    snippet: "a dense excerpt here",
+  });
+  assert.equal(mapParallelSource({ title: "No url" }), undefined);
+  assert.equal(mapParallelSource({ url: "   " }), undefined);
+  // A result with no usable excerpt has no snippet.
+  assert.deepEqual(mapParallelSource({ url: "https://parallel.example/b" }), { url: "https://parallel.example/b" });
+});
+
+test("mapParallelResults caps the Parallel section to maxResults", () => {
+  const items = [
+    { url: "https://parallel.example/1", title: "one" },
+    { url: "https://parallel.example/2", title: "two" },
+    { url: "https://parallel.example/3", title: "three" },
+    { url: "https://parallel.example/4", title: "four" },
+  ];
+  const capped = mapParallelResults(items, 2);
+  assert.equal(capped.length, 2);
+  assert.equal(capped[0].url, "https://parallel.example/1");
+  assert.equal(capped[1].url, "https://parallel.example/2");
+  assert.deepEqual(mapParallelResults(undefined, 8), []);
+  assert.deepEqual(mapParallelResults([{ title: "no url" }], 8), []);
+});
+
+function makeFakeParallelResponse(results, ok = true, status = 200) {
+  return {
+    ok,
+    status,
+    async json() {
+      return { results };
+    },
+  };
+}
+
+test("createParallelSection.run is inert (undefined, no fetch) without a key", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    return makeFakeParallelResponse([]);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  // Literal apiKey empty AND apiKeyEnv var absent → no resolvable key.
+  const section = createParallelSection({
+    enabled: true,
+    apiKey: "",
+    apiKeyEnv: "PARALLEL_API_KEY_TEST_UNSET",
+  });
+  const blocks = await section.run("query", {
+    maxResults: 8,
+    sources: new Set(["parallel"]),
+  });
+  assert.equal(blocks, undefined);
+  assert.equal(calls.length, 0, "fetch must not be called without a key");
+});
+
+test("createParallelSection.run issues the correct Parallel request (POST, x-api-key, mode fast)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (url, opts) => {
+    captured = { url, opts };
+    return makeFakeParallelResponse([{ url: "https://parallel.example/1", title: "One", excerpts: ["snippet one"] }]);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const section = createParallelSection({
+    enabled: true,
+    apiKey: "test-key-123",
+    apiKeyEnv: "PARALLEL_API_KEY_TEST_UNSET",
+  });
+  const blocks = await section.run("latest ai news", {
+    maxResults: 8,
+    sources: new Set(["parallel"]),
+  });
+  assert.equal(captured.url, PARALLEL_API_URL);
+  assert.equal(captured.opts.method, "POST");
+  assert.equal(captured.opts.headers["x-api-key"], "test-key-123");
+  assert.equal(captured.opts.headers["Content-Type"], "application/json");
+  const body = JSON.parse(captured.opts.body);
+  assert.equal(body.objective, "latest ai news");
+  assert.deepEqual(body.search_queries, ["latest ai news"]);
+  assert.equal(body.mode, "fast");
+  assert.equal(PARALLEL_MODE_DEFAULT, "fast");
+  assert.ok(blocks !== undefined);
+});
+
+test("createParallelSection.run maps the response to one 'Parallel results' block", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    makeFakeParallelResponse([
+      { url: "https://parallel.example/1", title: "One", excerpts: ["snippet one"] },
+      { url: "https://parallel.example/2", title: "Two", excerpts: ["snippet two"] },
+    ]);
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const section = createParallelSection({ enabled: true, apiKey: "k", apiKeyEnv: "X" });
+  const blocks = await section.run("query", {
+    maxResults: 8,
+    sources: new Set(["parallel"]),
+  });
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].name, "Parallel results");
+  assert.equal(blocks[0].sources.length, 2);
+  assert.equal(blocks[0].sources[0].url, "https://parallel.example/1");
+  assert.equal(blocks[0].sources[0].title, "One");
+  assert.equal(blocks[0].sources[0].snippet, "snippet one");
+});
+
+test("createParallelSection.run caps to min(ctx.maxResults, config.maxResults)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    makeFakeParallelResponse(
+      Array.from({ length: 10 }, (_, i) => ({
+        url: `https://parallel.example/${i}`,
+        title: `T${i}`,
+        excerpts: [`s${i}`],
+      })),
+    );
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const section = createParallelSection({ enabled: true, apiKey: "k", apiKeyEnv: "X", maxResults: 3 });
+  const blocks = await section.run("query", { maxResults: 8, sources: new Set(["parallel"]) });
+  assert.equal(blocks[0].sources.length, 3);
+});
+
+test("createParallelSection.run degrades (undefined) on HTTP error or malformed body", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const behaviors = [
+    () => makeFakeParallelResponse([], false, 500), // non-2xx
+    () => ({ ok: true, status: 200, json: async () => ({}) }), // missing results
+    () => ({ ok: true, status: 200, json: async () => ({ results: "not-an-array" }) }), // malformed results
+  ];
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const section = createParallelSection({ enabled: true, apiKey: "k", apiKeyEnv: "X" });
+  for (const behavior of behaviors) {
+    globalThis.fetch = async () => behavior();
+    const blocks = await section.run("query", { maxResults: 8, sources: new Set(["parallel"]) });
+    assert.equal(blocks, undefined, `expected undefined for: ${behavior.toString()}`);
+  }
+});
+
+test("createParallelSection.run degrades (undefined) when results are empty", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => makeFakeParallelResponse([]);
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const section = createParallelSection({ enabled: true, apiKey: "k", apiKeyEnv: "X" });
+  const blocks = await section.run("query", { maxResults: 8, sources: new Set(["parallel"]) });
+  assert.equal(blocks, undefined);
+});
+
+test("createParallelSection.run omits (undefined) when disabled", async () => {
+  const section = createParallelSection({ enabled: false, apiKey: "k", apiKeyEnv: "X" });
+  assert.equal(await section.run("q", { maxResults: 8, sources: new Set() }), undefined);
+});
+
+test("buildSections includes parallel and resolveSourcesParameter selects the parallel token", () => {
+  const sections = buildSections(
+    {
+      searxng: { enabled: true, url: "http://127.0.0.1:8080" },
+      parallel: { enabled: true, apiKey: "", apiKeyEnv: "PARALLEL_API_KEY_TEST_UNSET" },
+      rag: { enabled: true, databases: [] },
+    },
+    {},
+  );
+  assert.deepEqual(sections.map((s) => s.id), ["searxng", "parallel", "rag"]);
+  const resolved = resolveSourcesParameter("native,parallel", sections);
+  assert.deepEqual(resolved, { native: true, sections: new Set(["parallel"]) });
 });

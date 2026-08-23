@@ -291,6 +291,201 @@ export function createSearxngSection(config: {
 }
 
 // ---------------------------------------------------------------------------
+// Parallel section (Parallel Web Systems Search API)
+// ---------------------------------------------------------------------------
+
+/** Parallel Search API endpoint. */
+export const PARALLEL_API_URL = "https://api.parallel.ai/v1/search";
+
+/** Search `mode` values accepted by the Parallel API. */
+export type ParallelMode = "turbo" | "fast" | "basic" | "advanced";
+
+/** Default search mode (cheap/fast tier) used when no `mode` is configured. */
+export const PARALLEL_MODE_DEFAULT: ParallelMode = "fast";
+
+/** Maximum snippet length (chars) retained from a Parallel result excerpt. */
+export const PARALLEL_SNIPPET_MAX_CHARS = 600;
+
+/** The maximum number of results the Parallel API returns per request. */
+export const PARALLEL_MAX_RESULTS = 10;
+
+/**
+ * Derive the `search_queries` array sent to the Parallel API from a single
+ * `web_search` `query`. The API accepts a single-query array; if a live
+ * integration shows that it is rejected, switch to the deterministic
+ * two-query fallback `[query, query + ' — recent news and analysis']` here.
+ */
+export function deriveParallelSearchQueries(query: string): string[] {
+  return [query];
+}
+
+/** The raw Parallel result-item shape (the fields we consume). */
+export interface ParallelResultItem {
+  url?: string;
+  title?: string;
+  publish_date?: string | null;
+  excerpts?: string[];
+}
+
+/** The parsed Parallel Search API envelope (only the fields we read). */
+export interface ParallelResponse {
+  results?: ParallelResultItem[];
+}
+
+/**
+ * Pick the snippet for a Parallel result: the densest (longest) excerpt,
+ * truncated to {@link PARALLEL_SNIPPET_MAX_CHARS}; falls back to the first
+ * excerpt when present, or `undefined` when there are no excerpts.
+ */
+export function pickParallelSnippet(excerpts: string[] | undefined): string | undefined {
+  if (!Array.isArray(excerpts) || excerpts.length === 0) return undefined;
+  let best = excerpts[0] ?? "";
+  for (const excerpt of excerpts) {
+    if (typeof excerpt === "string" && excerpt.length > best.length) best = excerpt;
+  }
+  return truncateSnippet(best, PARALLEL_SNIPPET_MAX_CHARS);
+}
+
+/**
+ * Map one raw Parallel result item to a {@link SectionSource} (url, title,
+ * snippet from the densest excerpt); skips a result that lacks a usable URL.
+ */
+export function mapParallelSource(item: ParallelResultItem): SectionSource | undefined {
+  if (typeof item.url !== "string" || item.url.trim().length === 0) return undefined;
+  const source: SectionSource = { url: item.url };
+  if (typeof item.title === "string" && item.title.trim().length > 0) {
+    source.title = item.title.trim();
+  }
+  const snippet = pickParallelSnippet(item.excerpts);
+  if (snippet !== undefined) source.snippet = snippet;
+  return source;
+}
+
+/**
+ * Map a Parallel result set to capped, canonical source objects. Skips
+ * results missing a usable URL; caps to `maxResults` in result order.
+ */
+export function mapParallelResults(
+  items: readonly ParallelResultItem[] | undefined,
+  maxResults: number,
+): SectionSource[] {
+  if (!Array.isArray(items)) return [];
+  const out: SectionSource[] = [];
+  for (const item of items) {
+    if (out.length >= maxResults) break;
+    const mapped = mapParallelSource(item);
+    if (mapped !== undefined) out.push(mapped);
+  }
+  return out;
+}
+
+/**
+ * Call the Parallel Search API once. Never throws: any failure (network,
+ * timeout, non-2xx, invalid JSON) resolves to `undefined` so the caller can
+ * silently omit the section. Bounded by a local `timeoutMs` timer composed
+ * with the caller's `signal`, exactly like {@link fetchSearxng}.
+ */
+export async function fetchParallel(
+  objective: string,
+  searchQueries: string[],
+  mode: ParallelMode,
+  apiKey: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<ParallelResponse | undefined> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new DOMException("Parallel timeout", "TimeoutError")),
+    timeoutMs,
+  );
+  const onExternalAbort = () => controller.abort(signal?.reason);
+  if (signal !== undefined) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+    } else {
+      signal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+  }
+
+  try {
+    const response = await fetch(PARALLEL_API_URL, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify({
+        objective,
+        search_queries: searchQueries,
+        mode,
+      }),
+    });
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as ParallelResponse;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.results)) {
+      return undefined;
+    }
+    return body;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+    if (signal !== undefined) {
+      signal.removeEventListener("abort", onExternalAbort);
+    }
+  }
+}
+
+/**
+ * Build the Parallel search section.
+ *
+ * The section is inert (returns `undefined` without fetching) when no API key
+ * resolves: the literal `apiKey` wins, else the `apiKeyEnv` environment
+ * variable. `mode` defaults to {@link PARALLEL_MODE_DEFAULT} (`fast`).
+ *
+ * @param config - the Parallel config slice: `{ enabled, apiKey, apiKeyEnv,
+ *   mode?, maxResults? }` plus an optional internal `timeoutMs` bound.
+ * @returns the configured Parallel section.
+ */
+export function createParallelSection(config: {
+  enabled: boolean;
+  apiKey: string;
+  apiKeyEnv: string;
+  mode?: ParallelMode;
+  maxResults?: number;
+  timeoutMs?: number;
+}): SearchSection {
+  const timeoutMs = config.timeoutMs ?? DEFAULT_WEB_TOOL_TIMEOUT_MS;
+  const mode = config.mode ?? PARALLEL_MODE_DEFAULT;
+  const maxResults = config.maxResults ?? PARALLEL_MAX_RESULTS;
+  return {
+    id: "parallel",
+    enabled: config.enabled,
+    async run(query, ctx) {
+      if (!config.enabled) return undefined;
+      const key = config.apiKey.trim().length > 0
+        ? config.apiKey
+        : (process.env[config.apiKeyEnv] ?? "");
+      if (key.length === 0) return undefined; // inert without a key — no fetch
+      const raw = await fetchParallel(
+        query,
+        deriveParallelSearchQueries(query),
+        mode,
+        key,
+        ctx.signal,
+        timeoutMs,
+      );
+      if (raw === undefined) return undefined;
+      const cap = Math.min(ctx.maxResults, maxResults);
+      const sources = mapParallelResults(raw.results, cap);
+      if (sources.length === 0) return undefined;
+      return [{ name: "Parallel results", sources }];
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // RAG section
 // ---------------------------------------------------------------------------
 
@@ -399,6 +594,13 @@ export function resolveSourcesParameter(
 export interface SectionsConfig {
   searxng?: { enabled?: boolean; url?: string };
   rag?: { enabled?: boolean; databases?: RagDatabaseConfig[] };
+  parallel?: {
+    enabled?: boolean;
+    apiKey?: string;
+    apiKeyEnv?: string;
+    mode?: ParallelMode;
+    maxResults?: number;
+  };
 }
 
 /**
@@ -413,7 +615,7 @@ export interface SectionsConfig {
  */
 export function buildSections(
   config: SectionsConfig,
-  opts: { ragEngine?: RagEngine | undefined; searxngTimeoutMs?: number } = {},
+  opts: { ragEngine?: RagEngine | undefined; searxngTimeoutMs?: number; parallelTimeoutMs?: number } = {},
 ): SearchSection[] {
   const out: SearchSection[] = [];
   for (const id of Object.keys(config)) {
@@ -431,6 +633,17 @@ export function buildSections(
         enabled: raw?.enabled ?? true,
         engine: opts.ragEngine,
         databases: raw?.databases ?? [],
+      });
+      if (section.enabled) out.push(section);
+    } else if (id === "parallel") {
+      const raw = config.parallel;
+      const section = createParallelSection({
+        enabled: raw?.enabled ?? true,
+        apiKey: raw?.apiKey ?? "",
+        apiKeyEnv: raw?.apiKeyEnv ?? "PARALLEL_API_KEY",
+        mode: raw?.mode,
+        maxResults: raw?.maxResults,
+        timeoutMs: opts.parallelTimeoutMs,
       });
       if (section.enabled) out.push(section);
     } else {

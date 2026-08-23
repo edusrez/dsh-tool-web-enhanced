@@ -23,8 +23,8 @@ Everything is **optional**: with no modules configured, `web_search` is exactly 
 ## Features
 
 - **Modular per-section architecture** — each search source is a `SearchSection` registered under `sections:`. Native results stay first; every additional module renders as its own section.
-- **Built-in modules** — a **SearXNG** section (rendered as `SearXNG results`) and a **RAG** section over local markdown databases (one `RAG — <dbName>` block per database).
-- **Optional `topic` and `sources` parameters** — `topic` forwards a vertical hint to modules that support it; `sources` picks any combination of native / SearXNG / RAG (`native`, `searxng`, `rag`, or `all`).
+- **Built-in modules** — a **SearXNG** section (rendered as `SearXNG results`), a **RAG** section over local markdown databases (one `RAG — <dbName>` block per database), and a **Parallel** section (Parallel Web Systems Search API, rendered as `Parallel results`).
+- **Optional `topic` and `sources` parameters** — `topic` forwards a vertical hint to modules that support it; `sources` picks any combination of native / SearXNG / RAG / Parallel (`native`, `searxng`, `rag`, `parallel`, or `all`).
 - **Silent degradation** — a module that is absent, disabled, or unreachable is simply omitted, never an error; results degrade to the remaining sections.
 - **Self-contained drop-in** — the bundle registers the enhanced tools and disables the stock `tool-web` row automatically on install.
 
@@ -48,6 +48,10 @@ This is a DSH bundle: `package.json` carries `dsh.bundle.patch = ./cordis.patch.
           searxng:
             enabled: true
             url: 'http://127.0.0.1:8080'
+          parallel:
+            enabled: true
+            apiKeyEnv: PARALLEL_API_KEY
+            apiKey: ''
           rag:
             enabled: true
             storePath: ''
@@ -73,6 +77,11 @@ The enhanced behaviour lives under one unified `sections:` container. Keys are n
 | `fetch`                                | boolean| `true`                                   | Register `web_fetch` (unchanged). |
 | `sections.searxng.enabled`             | boolean| `true`                                   | Enable the SearXNG section. |
 | `sections.searxng.url`                 | string | `http://127.0.0.1:8080`                  | Base URL of the local SearXNG JSON API. |
+| `sections.parallel.enabled`            | boolean| `true`                                   | Enable the Parallel (Parallel Web Systems Search API) section. |
+| `sections.parallel.apiKeyEnv`          | string | `PARALLEL_API_KEY`                       | Env var holding the Parallel API key. |
+| `sections.parallel.apiKey`             | string | `''`                                     | Literal Parallel API key (wins over `apiKeyEnv`). |
+| `sections.parallel.mode`               | string | `fast`                                   | Parallel search mode: `turbo` / `fast` / `basic` / `advanced`. |
+| `sections.parallel.maxResults`         | number | `10`                                     | Max results returned by the section (`≤10`, no pagination). |
 | `sections.rag.enabled`                 | boolean| `true`                                   | Enable the RAG section + `rag_index` tool. |
 | `sections.rag.storePath`               | string | `''` (auto)                              | Search-index store path; empty → a default under the data home. |
 | `sections.rag.embeddings.provider`     | string | `auto`                                   | Embedding selection: `auto` / `local` / `remote`. `auto` → remote when a key is set, else local. |
@@ -95,7 +104,7 @@ The stock `search` / `fetch` keys are kept unchanged for drop-in compatibility.
 | --------- | -------- | ----------- |
 | `query`   | yes      | The search query. |
 | `topic`   | no       | Vertical hint, forwarded to sections that support it (e.g. SearXNG categories): `general`, `news`, `science`, `it`, `files`, `social media`, `images`, `videos`, `map`, `music`. |
-| `sources` | no       | Comma-separated tokens — `native` plus each enabled section id. Default `all`. Examples: `native,searxng` or `searxng,rag`. |
+| `sources` | no       | Comma-separated tokens — `native` plus each enabled section id. Default `all`. Examples: `native,searxng`, `searxng,rag`, or `searxng,parallel`. |
 
 The output shape carries the native results plus a `sections` array — one entry per module that returned results:
 
@@ -112,6 +121,10 @@ The output shape carries the native results plus a `sections` array — one entr
     {
       "name": "RAG — my-docs",
       "sources": [ { "url": "...", "title": "...", "path": "...", "score": 0.72 } ]
+    },
+    {
+      "name": "Parallel results",
+      "sources": [ { "url": "...", "title": "...", "snippet": "..." } ]
     }
   ]
 }
@@ -128,6 +141,20 @@ GET {sections.searxng.url}/search?q=<query>&format=json[&categories=<topic>]
 The simplest way to stand one up is a Docker Compose service exposing the JSON API on a local port. Having no running instance is fine: the SearXNG section is **silently omitted** when it is disabled, unreachable, or empty.
 
 > **Guarantee**: when a module is absent, disabled, or unreachable, `web_search` never errors — the section is simply omitted and results degrade to whatever remains (down to native-only, exactly stock).
+
+## Parallel section
+
+The Parallel section queries the [Parallel Web Systems Search API](https://api.parallel.ai/v1/search) (a declarative-semantic web search built for AI agents) and renders the sources as a `Parallel results` block under the native results. It calls `POST https://api.parallel.ai/v1/search` with an `x-api-key` header (not a bearer token) and a body of `{ objective, search_queries, mode }`:
+
+```
+POST {https://api.parallel.ai/v1/search}
+Headers: x-api-key: <key>
+Body: { "objective": "<query>", "search_queries": ["<query>"], "mode": "fast" }
+```
+
+The section needs a key to do anything — set `sections.parallel.apiKeyEnv` to an env var (default `PARALLEL_API_KEY`) or `sections.parallel.apiKey` to a literal key. With **no resolvable key the section is silently inert** (returns `undefined` and never calls the API). It is thus entirely **opt-in**: shipping the default config enables it, but nothing is fetched or sent until a key is present in the environment. The key is never committed to any repo file.
+
+By default it requests the fast (`mode: fast`) tier and caps results at `sections.parallel.maxResults` (default `10`, the API's per-call maximum — the API has no pagination). Failures (network, timeout, non-2xx, malformed response) degrade silently to `undefined`, exactly like the SearXNG section.
 
 ## RAG section
 
