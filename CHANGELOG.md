@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0-rc.1] - 2026-08-23
+
+Feature release that turns `web_search` into a modular per-section tool, adds the RAG and Parallel sections, the `sources` parameter and the `rag_index` tool, and an opt-in `parallel-extract` `web_fetch` provider. Replaces the flat config, `sources` and output shape with a unified `sections:` container and a `sections[]` output array (breaking).
 
 ### Changed
 
@@ -20,7 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sources` parameter on `web_search` (native/searxng/rag/parallel, default all).
 - RAG third section (local embedding model or any configured remote embedding provider, sqlite-vec store, one section per configured database).
 - `Parallel` web-search section (Parallel Web Systems Search API) — a new search source composed under the native results, selected via the `sources` `parallel` token and configured under `sections.parallel.{enabled,apiKeyEnv,apiKey,mode,maxResults}`. Opt-in: inert unless a key resolves. No key is committed.
+- `Parallel Extract` (`parallel-extract`) opt-in `web_fetch` provider (Parallel Web Systems Extract API) — a `fetchProvider` that returns a URL's full document as markdown, registered into `ctx.web` under `parallelExtract.{enabled,apiKeyEnv,apiKey,extractMode,timeoutMs}`. Inert unless enabled and a key resolves; selected by the deployment profile's `fetchProvider: 'parallel-extract'`.
 - `rag_index` tool.
+
+## [Unreleased]
+
+### Changed
+
+### Added
 
 ## [0.1.0-rc.1] - 2026-08-17
 
