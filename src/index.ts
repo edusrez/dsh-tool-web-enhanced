@@ -11,7 +11,7 @@ import {
   DEFAULT_FETCH_MAX_OUTPUT_CHARS,
 } from "@deepseek-ai/dsh-tool-web";
 
-import { RagEngine } from "./rag.js";
+import { RagEngine, type RagIndexOptions } from "./rag.js";
 import {
   buildSections,
   createParallelSection,
@@ -684,7 +684,7 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
 
   // The RAG section is the only one exposing an index accessor.
   const ragSection = sections.find((s) => s.id === "rag") as
-    | (SearchSection & { ensureIndex?: (databases: { name: string; path: string; topK: number }[]) => Promise<Record<string, number>> })
+    | (SearchSection & { ensureIndex?: (databases: { name: string; path: string; topK: number }[], opts?: RagIndexOptions) => Promise<Record<string, number>> })
     | undefined;
 
   if (ragEngine !== undefined && ragSection !== undefined) {
@@ -695,7 +695,7 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
 
     ctx.tools.register(defineTool({
       name: "rag_index",
-      description: "Rebuild the local RAG index for all configured databases. Returns the number of chunks indexed per database.",
+      description: "Rebuild the local RAG index for all configured databases: clears the previous index (chunks + mtime ledger) and re-chunks every file from scratch, so a partial or stale index is regenerated cleanly. Returns the number of chunks indexed per database.",
       parameters: {},
       output: {
         schema: {
@@ -710,7 +710,7 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
       timeoutMs: 300000,
       isConcurrencySafe: () => false,
       async execute() {
-        const counts = await ragSection.ensureIndex!(rag.databases);
+        const counts = await ragSection.ensureIndex!(rag.databases, { clear: true });
         return { indexed: counts };
       },
     }));

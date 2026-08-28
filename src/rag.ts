@@ -70,6 +70,19 @@ export interface RagIngestFilters {
   denyContent?: readonly string[];
 }
 
+/** Options controlling one {@link RagEngine.ensureIndex} pass. */
+export interface RagIndexOptions {
+  /**
+   * Rebuild mode: drop the persisted `chunks` rows and the `files` mtime
+   * ledger before re-walking, so every configured file is re-chunked from
+   * scratch and the rowid sequence restarts at 1. This is the contract of
+   * the `rag_index` tool: running it twice in a row (or after a crash left
+   * a partial index) must regenerate a clean store — never collide with
+   * stale rows from a previous pass.
+   */
+  clear?: boolean;
+}
+
 /** An embedding provider: maps a batch of texts to their vectors. */
 export type Embedder = (texts: string[]) => Promise<number[][]>;
 
@@ -367,6 +380,18 @@ export class RagEngine {
   private readonly logger: (msg: string) => void;
   private readonly filters: RagIngestFilters;
 
+  /**
+   * The in-flight index pass, shared by concurrent callers — the boot
+   * auto-index, the `rag_index` tool and a query racing the boot-time index
+   * (see {@link query}) can all invoke {@link ensureIndex} on one engine.
+   * Without serialization, two interleaved passes over one store read the
+   * same `MAX(rowid)` base and insert the same explicit rowids, which the
+   * vec0 `chunks_rowids` primary key rejects ("UNIQUE constraint failed on
+   * chunks primary key"). An incremental caller reuses the in-flight pass; a
+   * rebuild (`clear: true`) waits for it and then runs its own clear pass.
+   */
+  private indexRun: Promise<Record<string, number>> | undefined;
+
   constructor(opts: {
     storePath: string;
     embedder: Embedder;
@@ -377,6 +402,7 @@ export class RagEngine {
     this.embedder = opts.embedder;
     this.logger = opts.logger ?? (() => {});
     this.filters = opts.filters ?? {};
+    this.indexRun = undefined;
   }
 
   /** Lazily load the sqlite dependencies (native; imported only on use). */
@@ -404,9 +430,47 @@ export class RagEngine {
    * is created lazily once the embedding dimension is known, and rebuilt if
    * the dimension changes.
    *
+   * Concurrent calls on the same engine are serialized: the boot auto-index,
+   * the `rag_index` tool and a query racing the boot-time index share one
+   * in-flight pass (an incremental caller reuses it; a `clear` rebuild waits
+   * for it and then restarts the store), so two passes can never derive the
+   * same explicit rowids.
+   *
+   * @param databases - the configured database roots.
+   * @param opts - pass options; `clear: true` rebuilds from scratch (drop
+   *   the persisted chunks and the mtime ledger before re-walking).
    * @returns a record mapping each database name to its stored chunk count.
    */
-  async ensureIndex(databases: RagDatabaseConfig[]): Promise<Record<string, number>> {
+  async ensureIndex(
+    databases: RagDatabaseConfig[],
+    opts: RagIndexOptions = {},
+  ): Promise<Record<string, number>> {
+    const inFlight = this.indexRun;
+    if (inFlight !== undefined) {
+      if (!opts.clear) return inFlight;
+      // A rebuild must start from a settled store: wait for the in-flight
+      // pass (completing or failing) before running the clear pass.
+      try {
+        await inFlight;
+      } catch {
+        // The in-flight pass failed; the clear rebuild still proceeds (a
+        // failed incremental pass must not block a full rebuild).
+      }
+    }
+    const run = this.runEnsureIndex(databases, opts.clear === true);
+    this.indexRun = run;
+    try {
+      return await run;
+    } finally {
+      if (this.indexRun === run) this.indexRun = undefined;
+    }
+  }
+
+  /** The actual index pass (serialized by {@link ensureIndex}). */
+  private async runEnsureIndex(
+    databases: RagDatabaseConfig[],
+    clear: boolean,
+  ): Promise<Record<string, number>> {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
@@ -432,6 +496,16 @@ export class RagEngine {
         this.logger(
           `rag: dims changed (${(stored as { value: string }).value} → ${dims}); rebuilding chunks`,
         );
+        db.exec("DROP TABLE IF EXISTS chunks");
+        db.exec("DELETE FROM files");
+      }
+      // Rebuild (clear) mode: drop the persisted chunk store and the mtime
+      // ledger so the pass re-chunks every configured file from scratch and
+      // the rowid sequence restarts at 1. A `rag_index` re-run (after a
+      // crash or a partial index) therefore regenerates a clean store instead
+      // of continuing from stale rows — the idempotency the rebuild contract
+      // requires.
+      if (clear) {
         db.exec("DROP TABLE IF EXISTS chunks");
         db.exec("DELETE FROM files");
       }

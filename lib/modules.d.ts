@@ -14,7 +14,7 @@
  *
  * @module dsh-tool-web-enhanced/modules
  */
-import { RagEngine, type RagDatabaseConfig } from "./rag.js";
+import { RagEngine, type RagDatabaseConfig, type RagIndexOptions } from "./rag.js";
 import type { WebFetchProvider, WebFetchRequest, WebFetchResult } from "@deepseek-ai/dsh-web";
 import type { Context } from "@deepseek-ai/cordis";
 /** One retrieved source item returned by a section. */
@@ -332,7 +332,7 @@ export interface RagSectionConfig {
  * @returns the configured RAG section (with an `ensureIndex` accessor).
  */
 export declare function createRagSection(config: RagSectionConfig): SearchSection & {
-    ensureIndex(indexDatabases: RagDatabaseConfig[]): Promise<Record<string, number>>;
+    ensureIndex(indexDatabases: RagDatabaseConfig[], opts?: RagIndexOptions): Promise<Record<string, number>>;
 };
 /** The resolved `sources` parameter: whether native runs plus selected section ids. */
 export interface ResolvedSources {

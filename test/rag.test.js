@@ -519,3 +519,124 @@ test("RagEngine never embeds a denied chunk (denyContent scrub before embedding)
   );
   assert.ok(!leaked, "no secret text in any stored/returned chunk");
 });
+
+// ---------------------------------------------------------------------------
+// Rebuild idempotency + concurrency (post-window rag_index UNIQUE fix)
+// ---------------------------------------------------------------------------
+
+/**
+ * A delayed fake embedder: keeps the deterministic vectors but widens the
+ * async window between workers, exercising the ensureIndex serialization
+ * (the boot auto-index, the `rag_index` tool and a racing query share the
+ * same engine).
+ */
+function makeSlowFakeEmbedder(dim, delayMs = 60) {
+  const base = makeFakeEmbedder(dim);
+  return async (texts) => {
+    await new Promise((r) => setTimeout(r, delayMs));
+    return base(texts);
+  };
+}
+
+test("RagEngine clear rebuild is idempotent (rag_index twice, no rowid collision)", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(
+    join(docs, "one.md"),
+    "## Apples\nApples are a crisp and sweet fruit that grows on trees.\n\n## Bananas\nBananas are a soft and sweet fruit that grows in bunches.\n",
+  );
+  writeFileSync(join(docs, "two.md"), "Oranges are a citrus fruit full of vitamin C and very juicy.\n");
+
+  const storePath = join(dir, "store.sqlite");
+  const engine = new RagEngine({ storePath, embedder: makeFakeEmbedder(32) });
+  const databases = [{ name: "docs", path: docs, topK: 3 }];
+
+  // First pass: incremental build.
+  const first = await engine.ensureIndex(databases);
+  assert.ok(first.docs > 0, `first run indexes chunks: ${JSON.stringify(first)}`);
+
+  // `rag_index` contract: a rebuild must regenerate a clean store, so a
+  // second (and third) rebuild must never reuse stale rowids — the
+  // pre-fix failure was "UNIQUE constraint failed on chunks primary key".
+  const second = await engine.ensureIndex(databases, { clear: true });
+  assert.equal(second.docs, first.docs, "rebuild produces the same chunk counts");
+  const third = await engine.ensureIndex(databases, { clear: true });
+  assert.equal(third.docs, first.docs, "a rebuild after a rebuild is stable");
+
+  const sections = await engine.query("apples bananas oranges", databases);
+  assert.equal(sections.length, 1, "one non-empty section after repeated rebuilds");
+  assert.ok(sections[0].results.length >= 3, "all chunks queryable after repeated rebuilds");
+});
+
+test("RagEngine concurrent ensureIndex calls serialize without rowid collision", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(
+    join(docs, "one.md"),
+    "## Apples\nApples are a crisp and sweet fruit that grows on trees.\n\n## Bananas\nBananas are a soft and sweet fruit that grows in bunches.\n",
+  );
+  writeFileSync(join(docs, "two.md"), "Oranges are a citrus fruit full of vitamin C and very juicy.\n");
+
+  const storePath = join(dir, "store.sqlite");
+  const engine = new RagEngine({ storePath, embedder: makeSlowFakeEmbedder(32) });
+  const databases = [{ name: "docs", path: docs, topK: 3 }];
+
+  // Boot auto-index + a racing caller (`rag_index` rebuild): the rebuild
+  // must wait for the in-flight pass. Pre-fix, two interleaved passes over
+  // one store derived the same explicit rowids and tripped the vec0
+  // UNIQUE primary-key constraint.
+  const [incremental, rebuilt] = await Promise.all([
+    engine.ensureIndex(databases),
+    engine.ensureIndex(databases, { clear: true }),
+  ]);
+  assert.equal(incremental.docs, rebuilt.docs, "both callers settle on the same chunk counts");
+
+  const sections = await engine.query("apples bananas oranges", databases);
+  assert.equal(sections.length, 1, "one non-empty section after the serialized passes");
+  assert.ok(sections[0].results.length >= 3, "all chunks queryable after the serialized passes");
+});
+
+test("RagEngine rebuilds with denylisted secrets twice without rowid collision", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // The denylist case: a document whose secret-bearing chunks are FILTERED
+  // OUT before embedding, leaving only the safe sections in the store.
+  writeFileSync(
+    join(docs, "creds.md"),
+    `## Secret Pool\nSet ${SECRET_KEY} as the active key now and export ${SECRET_ENV} to the environment.\n\n## Safe Notes\nBananas are a soft and sweet fruit that grows in bunches.\n`,
+  );
+
+  const storePath = join(dir, "store.sqlite");
+  const databases = [{ name: "docs", path: docs, topK: 3 }];
+
+  const seen = [];
+  const baseEmbedder = makeFakeEmbedder(32);
+  const recordingEmbedder = async (texts) => {
+    seen.push(...texts);
+    return baseEmbedder(texts);
+  };
+  const engine = new RagEngine({ storePath, embedder: recordingEmbedder });
+
+  // Two rebuild passes (the `rag_index` tool contract): neither may trip the
+  // UNIQUE primary-key constraint, and the final chunks are exactly the
+  // expected safe ones.
+  const first = await engine.ensureIndex(databases, { clear: true });
+  const second = await engine.ensureIndex(databases, { clear: true });
+  assert.equal(first.docs, 1, "only the safe chunk survives the denylist");
+  assert.equal(second.docs, 1, "the rebuild reproduces the same safe chunk");
+
+  const sections = await engine.query("bananas soft sweet fruit", databases);
+  assert.equal(sections.length, 1, "one non-empty section");
+  assert.ok(sections[0].results.length > 0, "the safe chunk is queryable");
+  const leaked = sections.some((s) =>
+    s.results.some((r) => r.excerpt.includes(SECRET_KEY) || r.excerpt.includes("DEEPSEEK_API_KEY=")),
+  );
+  assert.ok(!leaked, "no secret text in any result after the rebuilds");
+  assert.ok(
+    !seen.some((text) => text.includes(SECRET_KEY)),
+    "the denied chunk text never reaches the embedder",
+  );
+});

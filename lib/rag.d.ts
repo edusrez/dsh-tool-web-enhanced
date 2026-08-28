@@ -60,6 +60,18 @@ export interface RagIngestFilters {
      */
     denyContent?: readonly string[];
 }
+/** Options controlling one {@link RagEngine.ensureIndex} pass. */
+export interface RagIndexOptions {
+    /**
+     * Rebuild mode: drop the persisted `chunks` rows and the `files` mtime
+     * ledger before re-walking, so every configured file is re-chunked from
+     * scratch and the rowid sequence restarts at 1. This is the contract of
+     * the `rag_index` tool: running it twice in a row (or after a crash left
+     * a partial index) must regenerate a clean store — never collide with
+     * stale rows from a previous pass.
+     */
+    clear?: boolean;
+}
 /** An embedding provider: maps a batch of texts to their vectors. */
 export type Embedder = (texts: string[]) => Promise<number[][]>;
 /**
@@ -121,6 +133,17 @@ export declare class RagEngine {
     private readonly embedder;
     private readonly logger;
     private readonly filters;
+    /**
+     * The in-flight index pass, shared by concurrent callers — the boot
+     * auto-index, the `rag_index` tool and a query racing the boot-time index
+     * (see {@link query}) can all invoke {@link ensureIndex} on one engine.
+     * Without serialization, two interleaved passes over one store read the
+     * same `MAX(rowid)` base and insert the same explicit rowids, which the
+     * vec0 `chunks_rowids` primary key rejects ("UNIQUE constraint failed on
+     * chunks primary key"). An incremental caller reuses the in-flight pass; a
+     * rebuild (`clear: true`) waits for it and then runs its own clear pass.
+     */
+    private indexRun;
     constructor(opts: {
         storePath: string;
         embedder: Embedder;
@@ -140,9 +163,20 @@ export declare class RagEngine {
      * is created lazily once the embedding dimension is known, and rebuilt if
      * the dimension changes.
      *
+     * Concurrent calls on the same engine are serialized: the boot auto-index,
+     * the `rag_index` tool and a query racing the boot-time index share one
+     * in-flight pass (an incremental caller reuses it; a `clear` rebuild waits
+     * for it and then restarts the store), so two passes can never derive the
+     * same explicit rowids.
+     *
+     * @param databases - the configured database roots.
+     * @param opts - pass options; `clear: true` rebuilds from scratch (drop
+     *   the persisted chunks and the mtime ledger before re-walking).
      * @returns a record mapping each database name to its stored chunk count.
      */
-    ensureIndex(databases: RagDatabaseConfig[]): Promise<Record<string, number>>;
+    ensureIndex(databases: RagDatabaseConfig[], opts?: RagIndexOptions): Promise<Record<string, number>>;
+    /** The actual index pass (serialized by {@link ensureIndex}). */
+    private runEnsureIndex;
     /**
      * Run a similarity query against one or more databases.
      *

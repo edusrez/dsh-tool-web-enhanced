@@ -15,7 +15,7 @@
  * @module dsh-tool-web-enhanced/modules
  */
 
-import { RagEngine, type RagDatabaseConfig, type RagSection } from "./rag.js";
+import { RagEngine, type RagDatabaseConfig, type RagIndexOptions, type RagSection } from "./rag.js";
 import { DEFAULT_WEB_TOOL_TIMEOUT_MS } from "@deepseek-ai/dsh-tool-web";
 import { WebError } from "@deepseek-ai/dsh-web";
 import type { WebFetchProvider, WebFetchRequest, WebFetchResult } from "@deepseek-ai/dsh-web";
@@ -829,7 +829,10 @@ export interface RagSectionConfig {
  * @returns the configured RAG section (with an `ensureIndex` accessor).
  */
 export function createRagSection(config: RagSectionConfig): SearchSection & {
-  ensureIndex(indexDatabases: RagDatabaseConfig[]): Promise<Record<string, number>>;
+  ensureIndex(
+    indexDatabases: RagDatabaseConfig[],
+    opts?: RagIndexOptions,
+  ): Promise<Record<string, number>>;
 } {
   const databases = config.databases;
   return {
@@ -854,9 +857,12 @@ export function createRagSection(config: RagSectionConfig): SearchSection & {
       }
       return blocks.length > 0 ? blocks : undefined;
     },
-    async ensureIndex(indexDatabases: RagDatabaseConfig[]): Promise<Record<string, number>> {
+    async ensureIndex(
+      indexDatabases: RagDatabaseConfig[],
+      opts?: RagIndexOptions,
+    ): Promise<Record<string, number>> {
       if (config.engine === undefined) return {};
-      return config.engine.ensureIndex(indexDatabases);
+      return config.engine.ensureIndex(indexDatabases, opts);
     },
   };
 }
