@@ -156,6 +156,24 @@ export const Config = z.object({
         baseURL: z.string().default('https://api.deepinfra.com/v1/openai'),
         localModel: z.string().default('Xenova/bge-small-en-v1.5'),
       }).default({} as any),
+      /**
+       * Glob patterns (POSIX, relative to each database root) of paths to
+       * skip during ingestion. Merged with the built-in defensive defaults
+       * (`.env`, `*.conf`, `.credentials.yaml`).
+       */
+      excludePaths: z.array(z.string()).default([]),
+      /**
+       * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+       * ingestion. Defaults to false — the current behaviour (dotfiles are
+       * walked) is preserved unless explicitly enabled.
+       */
+      ignoreDotfiles: z.boolean().default(false),
+      /**
+       * Regex sources; a chunk whose text matches any pattern is dropped
+       * before embedding. The built-in defaults (`sk-…` API keys, secret env
+       * assignments) always apply on top.
+       */
+      denyContent: z.array(z.string()).default([]),
       databases: z.array(z.object({
         name: z.string(),
         path: z.string(),
@@ -206,6 +224,9 @@ export interface EnhancedConfig {
         baseURL: string;
         localModel: string;
       };
+      excludePaths: string[];
+      ignoreDotfiles: boolean;
+      denyContent: string[];
       databases: { name: string; path: string; topK: number }[];
     };
   };
@@ -241,6 +262,9 @@ export interface ResolvedRag {
     baseURL: string;
     localModel: string;
   };
+  excludePaths: string[];
+  ignoreDotfiles: boolean;
+  denyContent: string[];
   databases: { name: string; path: string; topK: number }[];
 }
 
@@ -280,6 +304,9 @@ export function resolveRag(rag: EnhancedConfig['sections']['rag']): ResolvedRag 
       baseURL: rag.embeddings.baseURL,
       localModel: rag.embeddings.localModel,
     },
+    excludePaths: rag.excludePaths,
+    ignoreDotfiles: rag.ignoreDotfiles,
+    denyContent: rag.denyContent,
     databases: rag.databases,
   };
 }
@@ -637,6 +664,11 @@ export function apply(ctx: Context, config: EnhancedConfig): void {
           storePath: rag.storePath,
           embedder: createEmbedder(rag.embeddings),
           logger: (m) => console.log("[dsh-tool-web-enhanced] " + m),
+          filters: {
+            excludePaths: rag.excludePaths,
+            ignoreDotfiles: rag.ignoreDotfiles,
+            denyContent: rag.denyContent,
+          },
         })
       : undefined;
 

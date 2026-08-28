@@ -359,3 +359,163 @@ test("RagEngine unchanged file re-index does not collide", async (t) => {
   const second = await engine.ensureIndex(databases);
   assert.equal(second.docs, firstCount, "chunk counts stable across unchanged re-index");
 });
+
+// ---------------------------------------------------------------------------
+// Ingestion filters (fb-15): denyContent, excludePaths, ignoreDotfiles
+// ---------------------------------------------------------------------------
+
+const SECRET_KEY = "sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+const SECRET_ENV = "DEEPSEEK_API_KEY=sk-ZzYyXxWvUtSrQpOnMlKjIhGfEdCbA0987654321";
+const SECRET_POOL = "OPENCODE_GO_KEY_1=sk-M9Bu7abcdefghijklmnopqrstuvwxyzABCDEF";
+const AWS_KEY = "AKIAIOSFODNN7EXAMPLE"; // 20 chars (AKIA + 16), not sk-
+
+test("chunkMarkdown drops secret-bearing chunks by default (built-in deny)", () => {
+  // A chunk holding an sk- API key is discarded entirely.
+  assert.deepEqual(
+    chunkMarkdown(`## Pool\nSet ${SECRET_KEY} as the active key now.\n`, "pool.md"),
+    [],
+    "sk- key chunk dropped by the built-in denylist",
+  );
+  // A chunk holding a secret env assignment is discarded too.
+  assert.deepEqual(
+    chunkMarkdown(`## Deploy\nexport ${SECRET_ENV} for the agent run.\n`, "deploy.md"),
+    [],
+    "DEEPSEEK_API_KEY= chunk dropped by the built-in denylist",
+  );
+  assert.deepEqual(
+    chunkMarkdown(`## Pool\nexport ${SECRET_POOL} for the pool.\n`, "pool.md"),
+    [],
+    "OPENCODE_GO_KEY_n= chunk dropped by the built-in denylist",
+  );
+  // Prose that merely NAMES the variable (no assignment) still indexes.
+  const prose = chunkMarkdown(
+    "## Notes\nThe DEEPINFRA_TOKEN config is documented in the profile.",
+    "notes.md",
+  );
+  assert.equal(prose.length, 1, "prose naming a variable yields a chunk");
+});
+
+test("chunkMarkdown denyContent adds patterns on top of the built-ins", () => {
+  const mixed = `## Clean\nBananas are a soft and sweet fruit.\n\n## Leak\nThe token is ${AWS_KEY} and must not be indexed.\n`;
+  // Built-ins alone do not match the non-sk- token → both sections index.
+  const all = chunkMarkdown(mixed, "mixed.md");
+  assert.deepEqual(all.map((c) => c.title), ["Clean", "Leak"], "no config pattern → no filtering");
+  // A configured pattern adds to the built-ins and drops only the match.
+  const filtered = chunkMarkdown(mixed, "mixed.md", ["AKIA[0-9A-Z]{16}"]);
+  assert.deepEqual(filtered.map((c) => c.title), ["Clean"], "only the matching chunk is dropped");
+  assert.ok(!filtered[0].text.includes(AWS_KEY), "no key text survives");
+});
+
+test("RagEngine excludePaths skips glob matches and self-cleans on re-index", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(join(docs, "ok.md"), "## Apples\nApples are crisp and sweet.\n");
+  const secretDir = join(docs, "secrets");
+  mkdirSync(secretDir, { recursive: true });
+  writeFileSync(join(secretDir, "leak.md"), "## Leak\nclassified bananas are hidden here.\n");
+
+  const storePath = join(dir, "store.sqlite");
+  const databases = [{ name: "docs", path: docs, topK: 3 }];
+
+  // First index WITHOUT filters: both files are ingested.
+  const unfiltered = new RagEngine({ storePath, embedder: makeFakeEmbedder(32) });
+  await unfiltered.ensureIndex(databases);
+  const before = await unfiltered.query("classified bananas hidden", databases);
+  assert.ok(
+    before.length > 0 && before[0].results.some((r) => r.path.endsWith("secrets/leak.md")),
+    "leak.md indexed before exclusion",
+  );
+
+  // Re-index WITH excludePaths: the walk drops secrets/ and the removal loop
+  // deletes the stale chunks of the disappeared path.
+  const filtered = new RagEngine({
+    storePath,
+    embedder: makeFakeEmbedder(32),
+    filters: { excludePaths: ["**/secrets/**"] },
+  });
+  await filtered.ensureIndex(databases);
+  const after = await filtered.query("classified bananas hidden", databases);
+  assert.ok(
+    !(after.length > 0 && after[0].results.some((r) => r.path.endsWith("secrets/leak.md"))),
+    "leak.md chunks removed after the path is excluded",
+  );
+  const stillOk = await filtered.query("apples crisp sweet fruit", databases);
+  assert.ok(
+    stillOk.length > 0 && stillOk[0].results.some((r) => r.path.endsWith("ok.md")),
+    "ok.md remains queryable",
+  );
+});
+
+test("RagEngine ignoreDotfiles omits dotfiles only when enabled", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(join(docs, "ok.md"), "## Apples\nApples are crisp and sweet.\n");
+  // No secret tokens here: exclusion must come from ignoreDotfiles, not the
+  // content denylist.
+  writeFileSync(join(docs, ".env.md"), "## Env\nthe apple env file documents variables.\n");
+  const databases = [{ name: "docs", path: docs, topK: 3 }];
+
+  // Default (ignoreDotfiles false): .env.md IS walked and indexed.
+  const defStore = join(dir, "default.sqlite");
+  const defEngine = new RagEngine({ storePath: defStore, embedder: makeFakeEmbedder(32) });
+  await defEngine.ensureIndex(databases);
+  const defSections = await defEngine.query("apple env file documents", databases);
+  assert.ok(
+    defSections.length > 0 && defSections[0].results.some((r) => r.path.endsWith(".env.md")),
+    "dotfile indexed by default (current behaviour)",
+  );
+
+  // ignoreDotfiles true: .env.md skipped; ok.md untouched.
+  const filtStore = join(dir, "filtered.sqlite");
+  const filtEngine = new RagEngine({
+    storePath: filtStore,
+    embedder: makeFakeEmbedder(32),
+    filters: { ignoreDotfiles: true },
+  });
+  await filtEngine.ensureIndex(databases);
+  const filtSections = await filtEngine.query("apple env file documents", databases);
+  assert.ok(
+    !(filtSections.length > 0 && filtSections[0].results.some((r) => r.path.endsWith(".env.md"))),
+    "dotfile skipped when ignoreDotfiles is true",
+  );
+  const okSections = await filtEngine.query("apples crisp sweet fruit", databases);
+  assert.ok(
+    okSections.length > 0 && okSections[0].results.some((r) => r.path.endsWith("ok.md")),
+    "ok.md still indexed with ignoreDotfiles on",
+  );
+});
+
+test("RagEngine never embeds a denied chunk (denyContent scrub before embedding)", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(join(docs, "creds.md"), `## Credentials\napiKey=${SECRET_KEY}\n`);
+  writeFileSync(join(docs, "notes.md"), "## Notes\nBananas are a soft and sweet fruit.\n");
+
+  const storePath = join(dir, "store.sqlite");
+  const databases = [{ name: "docs", path: docs, topK: 3 }];
+
+  const seen = [];
+  const baseEmbedder = makeFakeEmbedder(32);
+  const recordingEmbedder = async (texts) => {
+    seen.push(...texts);
+    return baseEmbedder(texts);
+  };
+
+  const engine = new RagEngine({ storePath, embedder: recordingEmbedder });
+  const counts = await engine.ensureIndex(databases);
+
+  assert.ok(counts.docs > 0, "the legit file still indexes");
+  assert.ok(
+    !seen.some((text) => text.includes(SECRET_KEY)),
+    "the denied chunk text never reaches the embedder",
+  );
+
+  const sections = await engine.query("api key credentials", databases);
+  const leaked = sections.some((s) =>
+    s.results.some((r) => r.excerpt.includes(SECRET_KEY)),
+  );
+  assert.ok(!leaked, "no secret text in any stored/returned chunk");
+});

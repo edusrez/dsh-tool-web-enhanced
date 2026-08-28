@@ -71,6 +71,24 @@ export declare const Config: z<Schemastery.ObjectS<{
                 baseURL: z<string, string>;
                 localModel: z<string, string>;
             }>>;
+            /**
+             * Glob patterns (POSIX, relative to each database root) of paths to
+             * skip during ingestion. Merged with the built-in defensive defaults
+             * (`.env`, `*.conf`, `.credentials.yaml`).
+             */
+            excludePaths: z<string[], string[]>;
+            /**
+             * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+             * ingestion. Defaults to false — the current behaviour (dotfiles are
+             * walked) is preserved unless explicitly enabled.
+             */
+            ignoreDotfiles: z<boolean, boolean>;
+            /**
+             * Regex sources; a chunk whose text matches any pattern is dropped
+             * before embedding. The built-in defaults (`sk-…` API keys, secret env
+             * assignments) always apply on top.
+             */
+            denyContent: z<string[], string[]>;
             databases: z<({
                 name?: string | null | undefined;
                 path?: string | null | undefined;
@@ -98,6 +116,24 @@ export declare const Config: z<Schemastery.ObjectS<{
                 baseURL: z<string, string>;
                 localModel: z<string, string>;
             }>>;
+            /**
+             * Glob patterns (POSIX, relative to each database root) of paths to
+             * skip during ingestion. Merged with the built-in defensive defaults
+             * (`.env`, `*.conf`, `.credentials.yaml`).
+             */
+            excludePaths: z<string[], string[]>;
+            /**
+             * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+             * ingestion. Defaults to false — the current behaviour (dotfiles are
+             * walked) is preserved unless explicitly enabled.
+             */
+            ignoreDotfiles: z<boolean, boolean>;
+            /**
+             * Regex sources; a chunk whose text matches any pattern is dropped
+             * before embedding. The built-in defaults (`sk-…` API keys, secret env
+             * assignments) always apply on top.
+             */
+            denyContent: z<string[], string[]>;
             databases: z<({
                 name?: string | null | undefined;
                 path?: string | null | undefined;
@@ -147,6 +183,24 @@ export declare const Config: z<Schemastery.ObjectS<{
                 baseURL: z<string, string>;
                 localModel: z<string, string>;
             }>>;
+            /**
+             * Glob patterns (POSIX, relative to each database root) of paths to
+             * skip during ingestion. Merged with the built-in defensive defaults
+             * (`.env`, `*.conf`, `.credentials.yaml`).
+             */
+            excludePaths: z<string[], string[]>;
+            /**
+             * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+             * ingestion. Defaults to false — the current behaviour (dotfiles are
+             * walked) is preserved unless explicitly enabled.
+             */
+            ignoreDotfiles: z<boolean, boolean>;
+            /**
+             * Regex sources; a chunk whose text matches any pattern is dropped
+             * before embedding. The built-in defaults (`sk-…` API keys, secret env
+             * assignments) always apply on top.
+             */
+            denyContent: z<string[], string[]>;
             databases: z<({
                 name?: string | null | undefined;
                 path?: string | null | undefined;
@@ -174,6 +228,24 @@ export declare const Config: z<Schemastery.ObjectS<{
                 baseURL: z<string, string>;
                 localModel: z<string, string>;
             }>>;
+            /**
+             * Glob patterns (POSIX, relative to each database root) of paths to
+             * skip during ingestion. Merged with the built-in defensive defaults
+             * (`.env`, `*.conf`, `.credentials.yaml`).
+             */
+            excludePaths: z<string[], string[]>;
+            /**
+             * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+             * ingestion. Defaults to false — the current behaviour (dotfiles are
+             * walked) is preserved unless explicitly enabled.
+             */
+            ignoreDotfiles: z<boolean, boolean>;
+            /**
+             * Regex sources; a chunk whose text matches any pattern is dropped
+             * before embedding. The built-in defaults (`sk-…` API keys, secret env
+             * assignments) always apply on top.
+             */
+            denyContent: z<string[], string[]>;
             databases: z<({
                 name?: string | null | undefined;
                 path?: string | null | undefined;
@@ -250,6 +322,24 @@ export declare const Config: z<Schemastery.ObjectS<{
                 baseURL: z<string, string>;
                 localModel: z<string, string>;
             }>>;
+            /**
+             * Glob patterns (POSIX, relative to each database root) of paths to
+             * skip during ingestion. Merged with the built-in defensive defaults
+             * (`.env`, `*.conf`, `.credentials.yaml`).
+             */
+            excludePaths: z<string[], string[]>;
+            /**
+             * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+             * ingestion. Defaults to false — the current behaviour (dotfiles are
+             * walked) is preserved unless explicitly enabled.
+             */
+            ignoreDotfiles: z<boolean, boolean>;
+            /**
+             * Regex sources; a chunk whose text matches any pattern is dropped
+             * before embedding. The built-in defaults (`sk-…` API keys, secret env
+             * assignments) always apply on top.
+             */
+            denyContent: z<string[], string[]>;
             databases: z<({
                 name?: string | null | undefined;
                 path?: string | null | undefined;
@@ -277,6 +367,24 @@ export declare const Config: z<Schemastery.ObjectS<{
                 baseURL: z<string, string>;
                 localModel: z<string, string>;
             }>>;
+            /**
+             * Glob patterns (POSIX, relative to each database root) of paths to
+             * skip during ingestion. Merged with the built-in defensive defaults
+             * (`.env`, `*.conf`, `.credentials.yaml`).
+             */
+            excludePaths: z<string[], string[]>;
+            /**
+             * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+             * ingestion. Defaults to false — the current behaviour (dotfiles are
+             * walked) is preserved unless explicitly enabled.
+             */
+            ignoreDotfiles: z<boolean, boolean>;
+            /**
+             * Regex sources; a chunk whose text matches any pattern is dropped
+             * before embedding. The built-in defaults (`sk-…` API keys, secret env
+             * assignments) always apply on top.
+             */
+            denyContent: z<string[], string[]>;
             databases: z<({
                 name?: string | null | undefined;
                 path?: string | null | undefined;
@@ -326,6 +434,24 @@ export declare const Config: z<Schemastery.ObjectS<{
                 baseURL: z<string, string>;
                 localModel: z<string, string>;
             }>>;
+            /**
+             * Glob patterns (POSIX, relative to each database root) of paths to
+             * skip during ingestion. Merged with the built-in defensive defaults
+             * (`.env`, `*.conf`, `.credentials.yaml`).
+             */
+            excludePaths: z<string[], string[]>;
+            /**
+             * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+             * ingestion. Defaults to false — the current behaviour (dotfiles are
+             * walked) is preserved unless explicitly enabled.
+             */
+            ignoreDotfiles: z<boolean, boolean>;
+            /**
+             * Regex sources; a chunk whose text matches any pattern is dropped
+             * before embedding. The built-in defaults (`sk-…` API keys, secret env
+             * assignments) always apply on top.
+             */
+            denyContent: z<string[], string[]>;
             databases: z<({
                 name?: string | null | undefined;
                 path?: string | null | undefined;
@@ -353,6 +479,24 @@ export declare const Config: z<Schemastery.ObjectS<{
                 baseURL: z<string, string>;
                 localModel: z<string, string>;
             }>>;
+            /**
+             * Glob patterns (POSIX, relative to each database root) of paths to
+             * skip during ingestion. Merged with the built-in defensive defaults
+             * (`.env`, `*.conf`, `.credentials.yaml`).
+             */
+            excludePaths: z<string[], string[]>;
+            /**
+             * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during
+             * ingestion. Defaults to false — the current behaviour (dotfiles are
+             * walked) is preserved unless explicitly enabled.
+             */
+            ignoreDotfiles: z<boolean, boolean>;
+            /**
+             * Regex sources; a chunk whose text matches any pattern is dropped
+             * before embedding. The built-in defaults (`sk-…` API keys, secret env
+             * assignments) always apply on top.
+             */
+            denyContent: z<string[], string[]>;
             databases: z<({
                 name?: string | null | undefined;
                 path?: string | null | undefined;
@@ -415,6 +559,9 @@ export interface EnhancedConfig {
                 baseURL: string;
                 localModel: string;
             };
+            excludePaths: string[];
+            ignoreDotfiles: boolean;
+            denyContent: string[];
             databases: {
                 name: string;
                 path: string;
@@ -442,6 +589,9 @@ export interface ResolvedRag {
         baseURL: string;
         localModel: string;
     };
+    excludePaths: string[];
+    ignoreDotfiles: boolean;
+    denyContent: string[];
     databases: {
         name: string;
         path: string;

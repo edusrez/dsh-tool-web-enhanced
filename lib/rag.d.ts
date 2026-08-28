@@ -39,19 +39,64 @@ export interface RagDatabaseConfig {
     path: string;
     topK: number;
 }
+/** Optional filters applied during RAG ingestion (walk + chunking). */
+export interface RagIngestFilters {
+    /**
+     * Glob patterns (POSIX, relative to each database root) of paths to skip
+     * during the walk. Merged with the built-in defensive defaults
+     * ({@link DEFAULT_EXCLUDE_PATHS}).
+     */
+    excludePaths?: readonly string[];
+    /**
+     * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during the walk.
+     * Defaults to `false` (current behaviour — dotfiles are walked).
+     */
+    ignoreDotfiles?: boolean;
+    /**
+     * Regex sources; any chunk whose text matches one of these patterns is
+     * DROPPED before it is embedded. The built-in defaults
+     * ({@link DEFAULT_DENY_CONTENT}) always apply; configured patterns add to
+     * them.
+     */
+    denyContent?: readonly string[];
+}
 /** An embedding provider: maps a batch of texts to their vectors. */
 export type Embedder = (texts: string[]) => Promise<number[][]>;
+/**
+ * Defensive glob patterns ALWAYS excluded from RAG ingestion, independent of
+ * configuration. The walker only ingests `*.md`, so none of these match a
+ * file the walker can currently collect — they are a no-op safety net for
+ * secret-holding files (`.env`, key drop-ins, credential bundles, systemd
+ * units) if the walk ever broadens. Configured `excludePaths` add to this
+ * list; they cannot whitelist these paths back in.
+ */
+export declare const DEFAULT_EXCLUDE_PATHS: readonly string[];
+/**
+ * Default content-denylist regexes, applied to every produced chunk before it
+ * is embedded: a chunk whose text matches any pattern is discarded. The
+ * patterns target high-entropy API keys (`sk-…`) and secret environment
+ * ASSIGNMENTS (`DEEPSEEK_API_KEY=…`, `OPENCODE_GO_KEY_n=…`,
+ * `DEEPINFRA_TOKEN=…`, `PARALLEL_API_KEY=…`), while prose that merely NAMES
+ * these variables (e.g. "the DEEPINFRA_TOKEN config") survives — preserving
+ * legitimate technical discussion in the corpus. Configured `denyContent`
+ * patterns add to this list; they cannot re-admit a matched chunk.
+ */
+export declare const DEFAULT_DENY_CONTENT: readonly string[];
 /**
  * Split Markdown text into heading-aligned chunks.
  *
  * @param text - the raw Markdown content.
  * @param fileTitle - the document title (used for the no-heading case and the
  *   context line).
+ * @param denyContent - optional regex sources; a chunk whose text matches any
+ *   pattern is dropped. The built-in {@link DEFAULT_DENY_CONTENT} is ALWAYS
+ *   applied on top of the given patterns, so secret-bearing chunks never
+ *   reach the embedder.
  * @returns chunks whose titles come from level-2 headings, each prefixed with
  *   a `Document: <fileTitle>` context line (omitted when the chunk title
  *   equals the file title).
  */
-export declare function chunkMarkdown(text: string, fileTitle: string): RagChunk[];
+export declare function chunkMarkdown(text: string, fileTitle: string, denyContent?: readonly string[]): RagChunk[];
 /**
  * Parse a comma-separated source selector.
  *
@@ -75,10 +120,12 @@ export declare class RagEngine {
     private readonly storePath;
     private readonly embedder;
     private readonly logger;
+    private readonly filters;
     constructor(opts: {
         storePath: string;
         embedder: Embedder;
         logger?: (msg: string) => void;
+        filters?: RagIngestFilters;
     });
     /** Lazily load the sqlite dependencies (native; imported only on use). */
     private loadDeps;

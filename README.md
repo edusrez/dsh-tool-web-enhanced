@@ -201,6 +201,28 @@ The RAG module indexes local markdown databases into an on-machine store and, on
 
 When RAG is enabled with at least one database, a **`rag_index`** tool is registered. It rebuilds the local RAG index for all configured databases and returns the number of chunks indexed per database. The index is also built automatically (async, non-blocking) on startup.
 
+**Ingestion filters (secrets hygiene).** The `sections.rag` config accepts three optional keys controlling what enters the index:
+
+- `excludePaths: string[]` — glob patterns (POSIX, **relative to each database root**) of paths to skip during the walk. They are merged with the built-in defensive defaults, which always apply: `**/.env`, `**/*.conf`, `**/.credentials.yaml` (today these match no `*.md` — a no-op safety net if the walk ever broadens).
+- `ignoreDotfiles: boolean` (default `false`) — skip dotfiles and dot-directories (`.env.md`, `.git/`, …). Off by default so the current walk behaviour is preserved.
+- `denyContent: string[]` — regex sources; **any chunk whose text matches a pattern is dropped before embedding** (the exact text that would otherwise go to the embedder). Built-in defaults always apply on top of the configured patterns: `sk-[A-Za-z0-9_-]{15,}` (OpenAI/Anthropic-style API keys) and secret environment *assignments* (`DEEPSEEK_API_KEY=…`, `OPENCODE_GO_KEY_n=…`, `DEEPINFRA_TOKEN=…`, `PARALLEL_API_KEY=…` with a non-trivial value). Prose that merely *names* these variables (e.g. "the DEEPINFRA_TOKEN config") is not matched, so legitimate technical discussion stays searchable.
+
+Example:
+
+```yaml
+rag:
+  enabled: true
+  excludePaths:
+    - '**/secrets/**'
+    - 'journals/sessions/**'
+  ignoreDotfiles: true
+  denyContent:
+    - 'AKIA[0-9A-Z]{16}'       # AWS access keys, on top of the built-ins
+  databases: [ … ]
+```
+
+**The filters only affect NEW ingestion.** Because unchanged `.md` files are skipped by their mtime, chunks already stored keep serving until a forced re-chunk: delete `rag.db` (or the `files`/`chunks` rows) and re-run `rag_index`, or trigger the automatic dimension-change rebuild. Path-level excludes (`excludePaths`) additionally self-clean: files that disappear from the walk have their rows removed on the next `ensureIndex`.
+
 ## Adding your own section
 
 The whole point of this package is that `web_search` is modular **by sections**. To add a new search source you write a small, self-contained module — no changes to the core tool:

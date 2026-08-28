@@ -48,6 +48,28 @@ export interface RagDatabaseConfig {
   topK: number;
 }
 
+/** Optional filters applied during RAG ingestion (walk + chunking). */
+export interface RagIngestFilters {
+  /**
+   * Glob patterns (POSIX, relative to each database root) of paths to skip
+   * during the walk. Merged with the built-in defensive defaults
+   * ({@link DEFAULT_EXCLUDE_PATHS}).
+   */
+  excludePaths?: readonly string[];
+  /**
+   * Skip dotfiles and dot-directories (`.env.md`, `.git/`, …) during the walk.
+   * Defaults to `false` (current behaviour — dotfiles are walked).
+   */
+  ignoreDotfiles?: boolean;
+  /**
+   * Regex sources; any chunk whose text matches one of these patterns is
+   * DROPPED before it is embedded. The built-in defaults
+   * ({@link DEFAULT_DENY_CONTENT}) always apply; configured patterns add to
+   * them.
+   */
+  denyContent?: readonly string[];
+}
+
 /** An embedding provider: maps a batch of texts to their vectors. */
 export type Embedder = (texts: string[]) => Promise<number[][]>;
 
@@ -66,6 +88,38 @@ const CHUNK_MIN_CHARS = 20;
 
 /** Excerpt length (chars) retained in query results. */
 const EXCERPT_MAX_CHARS = 240;
+
+/**
+ * Defensive glob patterns ALWAYS excluded from RAG ingestion, independent of
+ * configuration. The walker only ingests `*.md`, so none of these match a
+ * file the walker can currently collect — they are a no-op safety net for
+ * secret-holding files (`.env`, key drop-ins, credential bundles, systemd
+ * units) if the walk ever broadens. Configured `excludePaths` add to this
+ * list; they cannot whitelist these paths back in.
+ */
+export const DEFAULT_EXCLUDE_PATHS: readonly string[] = [
+  "**/.env",
+  "**/*.conf",
+  "**/.credentials.yaml",
+];
+
+/**
+ * Default content-denylist regexes, applied to every produced chunk before it
+ * is embedded: a chunk whose text matches any pattern is discarded. The
+ * patterns target high-entropy API keys (`sk-…`) and secret environment
+ * ASSIGNMENTS (`DEEPSEEK_API_KEY=…`, `OPENCODE_GO_KEY_n=…`,
+ * `DEEPINFRA_TOKEN=…`, `PARALLEL_API_KEY=…`), while prose that merely NAMES
+ * these variables (e.g. "the DEEPINFRA_TOKEN config") survives — preserving
+ * legitimate technical discussion in the corpus. Configured `denyContent`
+ * patterns add to this list; they cannot re-admit a matched chunk.
+ */
+export const DEFAULT_DENY_CONTENT: readonly string[] = [
+  // OpenAI/Anthropic-style keys: sk- followed by ≥15 alnum/_/- chars.
+  "sk-[A-Za-z0-9_-]{15,}",
+  // Secret env assignments with a non-trivial value (a bare mention or a
+  // short prose value like "= set in .env" does not match).
+  "(?:DEEPSEEK_API_KEY|DEEPINFRA_TOKEN|PARALLEL_API_KEY|OPENCODE_GO_KEY(?:[_\\d]+)?)\\s*=\\s*[A-Za-z0-9_-]{8,}",
+];
 
 // ---------------------------------------------------------------------------
 // chunkMarkdown
@@ -125,17 +179,46 @@ function windowChunk(title: string, text: string): RagChunk[] {
   }));
 }
 
+/** Compile regex sources, validating them with a clear error on bad input. */
+function compileDenyPatterns(patterns: readonly string[]): RegExp[] {
+  return patterns.map((src) => {
+    try {
+      return new RegExp(src);
+    } catch (err) {
+      throw new Error(
+        `rag: invalid denyContent pattern ${JSON.stringify(src)}: ${(err as Error).message}`,
+      );
+    }
+  });
+}
+
 /**
  * Split Markdown text into heading-aligned chunks.
  *
  * @param text - the raw Markdown content.
  * @param fileTitle - the document title (used for the no-heading case and the
  *   context line).
+ * @param denyContent - optional regex sources; a chunk whose text matches any
+ *   pattern is dropped. The built-in {@link DEFAULT_DENY_CONTENT} is ALWAYS
+ *   applied on top of the given patterns, so secret-bearing chunks never
+ *   reach the embedder.
  * @returns chunks whose titles come from level-2 headings, each prefixed with
  *   a `Document: <fileTitle>` context line (omitted when the chunk title
  *   equals the file title).
  */
-export function chunkMarkdown(text: string, fileTitle: string): RagChunk[] {
+export function chunkMarkdown(
+  text: string,
+  fileTitle: string,
+  denyContent?: readonly string[],
+): RagChunk[] {
+  const chunks = chunkMarkdownImpl(text, fileTitle);
+  const denies = compileDenyPatterns([...DEFAULT_DENY_CONTENT, ...(denyContent ?? [])]);
+  if (denies.length === 0) return chunks;
+  return chunks.filter((c) => !denies.some((re) => re.test(c.text)));
+}
+
+/** The heading-aligned splitting itself, with no content filtering. */
+function chunkMarkdownImpl(text: string, fileTitle: string): RagChunk[] {
   const body = stripFrontmatter(text);
 
   const sections: { title: string; content: string }[] = [];
@@ -282,15 +365,18 @@ export class RagEngine {
   private readonly storePath: string;
   private readonly embedder: Embedder;
   private readonly logger: (msg: string) => void;
+  private readonly filters: RagIngestFilters;
 
   constructor(opts: {
     storePath: string;
     embedder: Embedder;
     logger?: (msg: string) => void;
+    filters?: RagIngestFilters;
   }) {
     this.storePath = opts.storePath;
     this.embedder = opts.embedder;
     this.logger = opts.logger ?? (() => {});
+    this.filters = opts.filters ?? {};
   }
 
   /** Lazily load the sqlite dependencies (native; imported only on use). */
@@ -385,7 +471,10 @@ export class RagEngine {
       );
 
       for (const database of databases) {
-        const files = await walkMarkdown(database.path, fs, path);
+        const files = await walkMarkdown(database.path, fs, path, {
+          excludePaths: this.filters.excludePaths,
+          ignoreDotfiles: this.filters.ignoreDotfiles,
+        });
         const filesByPath = new Set(files.map((f) => f.path));
 
         // Collect existing paths for this db to detect removals.
@@ -403,7 +492,7 @@ export class RagEngine {
 
           const content = fs.readFileSync(file.path, "utf8");
           const title = path.basename(file.path);
-          const chunks = chunkMarkdown(content, title);
+          const chunks = chunkMarkdown(content, title, this.filters.denyContent);
           if (chunks.length > 0) {
             const vectors = await this.embed(chunks.map((c) => c.text));
             const insertChunk = db.prepare(
@@ -580,12 +669,61 @@ export class RagEngine {
 // Filesystem walk
 // ---------------------------------------------------------------------------
 
-/** Hand-rolled recursive walk collecting `*.md` files (sorted, deterministic). */
+/**
+ * Convert a POSIX glob pattern to an anchored RegExp. `*` matches within a
+ * path segment, `?` a single segment char, and a `**` crosses segment
+ * boundaries (a `**` followed by a slash means zero or more directories; a
+ * trailing `**` means any remaining path). Literal regex metacharacters are
+ * escaped.
+ */
+function globToRegExp(pattern: string): RegExp {
+  let re = "";
+  let i = 0;
+  while (i < pattern.length) {
+    const c = pattern[i];
+    if (c === "*") {
+      if (pattern[i + 1] === "*") {
+        i += 2;
+        if (pattern[i] === "/") {
+          // `**/` — zero or more directory segments (matches at the root too).
+          re += "(?:[^/]+/)*";
+          i += 1;
+        } else {
+          // trailing `**` — any remaining path.
+          re += ".*";
+        }
+        continue;
+      }
+      re += "[^/]*";
+    } else if (c === "?") {
+      re += "[^/]";
+    } else {
+      re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    i += 1;
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/**
+ * Hand-rolled recursive walk collecting `*.md` files (sorted, deterministic).
+ *
+ * @param root - the database root directory.
+ * @param fs - the `node:fs` module (injected for testability).
+ * @param path - the `node:path` module (injected for testability).
+ * @param opts - optional filters: `excludePaths` globs (POSIX, relative to the
+ *   root; merged with {@link DEFAULT_EXCLUDE_PATHS}) and `ignoreDotfiles`
+ *   (skip entries whose name starts with `.` — files and directories).
+ */
 async function walkMarkdown(
   root: string,
   fs: typeof import("node:fs"),
   path: typeof import("node:path"),
+  opts: { excludePaths?: readonly string[]; ignoreDotfiles?: boolean } = {},
 ): Promise<{ path: string }[]> {
+  const excludeRe = [...DEFAULT_EXCLUDE_PATHS, ...(opts.excludePaths ?? [])]
+    .map((p) => globToRegExp(p));
+  const ignoreDotfiles = opts.ignoreDotfiles ?? false;
   const out: { path: string }[] = [];
   const stack: string[] = [root];
   while (stack.length > 0) {
@@ -598,9 +736,14 @@ async function walkMarkdown(
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
+      if (ignoreDotfiles && entry.name.startsWith(".")) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile() && entry.name.endsWith(".md")) out.push({ path: full });
+      else if (entry.isFile() && entry.name.endsWith(".md")) {
+        const rel = path.relative(root, full).replace(/\\/g, "/");
+        if (excludeRe.some((re) => re.test(rel))) continue;
+        out.push({ path: full });
+      }
     }
   }
   out.sort((a, b) => a.path.localeCompare(b.path));
