@@ -640,3 +640,180 @@ test("RagEngine rebuilds with denylisted secrets twice without rowid collision",
     "the denied chunk text never reaches the embedder",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Per-file isolation (RAG engine hardening): one file's insert failure must
+// never abort the whole pass (rollback that file → bounded re-base retry →
+// skip with a log), and the H1 vec0 diagnostic (rowid/MAX/chunk_id, metadata
+// only — never chunk_text or vectors) must be logged at the failure point.
+// ---------------------------------------------------------------------------
+
+test("RagEngine isolates a persistently failing file (skip + log) and continues the pass", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // A poisoned file whose embedder yields 33-dim vectors for a FLOAT[32]
+  // store: vec0 rejects the insert deterministically ("Dimension mismatch"),
+  // so both per-file attempts fail and the file must be SKIPPED — the boot
+  // pass keeps indexing the healthy files and never aborts.
+  writeFileSync(join(docs, "poisoned.md"), "## Poisoned\nApples are crisp and sweet.\n");
+  writeFileSync(join(docs, "ok-a.md"), "## A\nBananas are a soft and sweet fruit.\n");
+  writeFileSync(join(docs, "ok-b.md"), "## B\nOranges are a citrus fruit with vitamin C.\n");
+
+  const storePath = join(dir, "store.sqlite");
+  const databases = [{ name: "docs", path: docs, topK: 3 }];
+  const baseEmbedder = makeFakeEmbedder(32);
+  const poisonedEmbedder = async (texts) => {
+    if (texts.length === 1 && texts[0] === "probe") return baseEmbedder(texts);
+    if (texts.some((x) => x.includes("poisoned"))) {
+      return texts.map(() => new Array(33).fill(0.1)); // FLOAT[32] mismatch → in-tx throw
+    }
+    return baseEmbedder(texts);
+  };
+  const logs = [];
+  const engine = new RagEngine({
+    storePath,
+    embedder: poisonedEmbedder,
+    logger: (m) => logs.push(m),
+  });
+
+  const counts = await engine.ensureIndex(databases); // must NOT throw
+  assert.ok(counts.docs > 0, `healthy files indexed: ${JSON.stringify(counts)}`);
+
+  // The pass continued: healthy chunks are queryable.
+  const sections = await engine.query("bananas oranges", databases);
+  assert.equal(sections.length, 1, "one non-empty section");
+  assert.ok(sections[0].results.length >= 2, "both healthy files queryable");
+
+  // The poisoned file was retried ONCE, then skipped with the H1 diagnostic.
+  const retried = logs.filter((m) => m.includes("rag: retrying") && m.includes("poisoned.md"));
+  const skipped = logs.filter((m) => m.includes("rag: skipping") && m.includes("poisoned.md"));
+  assert.equal(retried.length, 1, "exactly one bounded retry logged");
+  assert.equal(skipped.length, 1, "persistent failure logged as a skip");
+  assert.ok(skipped[0].includes("rowid="), "H1 diagnostic rowid present");
+  assert.ok(skipped[0].includes("existing_chunk_id="), "H1 diagnostic chunk_id present");
+  assert.ok(skipped[0].includes("max_rowid="), "H1 diagnostic MAX(rowid) present");
+  assert.match(skipped[0], /Dimension mismatch/, "the underlying failure is logged");
+
+  // The file was NOT recorded in the ledger (its mtime was left untouched), so
+  // the next boot retries it: a healed pass over the same store indexes it.
+  const healed = new RagEngine({ storePath, embedder: baseEmbedder });
+  const healedCounts = await healed.ensureIndex(databases);
+  assert.ok(healedCounts.docs > counts.docs, `healed pass indexes the skipped file: ${JSON.stringify(healedCounts)}`);
+});
+
+/**
+ * A barrier embedder SHARED by two RagEngine instances: all `parties` must
+ * reach their chunk-batch embed before any of them proceeds. Each engine
+ * computes its rowid base (MAX(rowid)+1 on the shared store) BEFORE this
+ * barrier, so both racers derive the same next rowid and the second inserter
+ * deterministically trips the vec0 UNIQUE primary-key constraint — the exact
+ * production error ("UNIQUE constraint failed on chunks primary key") — which
+ * per-file isolation must contain (rollback → re-base retry → pass continues).
+ */
+function makeBarrierEmbedder(dim, parties, baseEmbedder) {
+  let arrived = 0;
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  return async (texts) => {
+    if (texts.length === 1 && texts[0] === "probe") return baseEmbedder(texts);
+    arrived += 1;
+    if (arrived === parties) release();
+    await gate;
+    return baseEmbedder(texts);
+  };
+}
+
+test("RagEngine isolates a UNIQUE rowid collision to one file (re-base retry) and the pass continues", async (t) => {
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(join(docs, "seed.md"), "## Seed\nSeeds grow into plants with leaves.\n");
+  const dirA = join(dir, "dbA");
+  const dirB = join(dir, "dbB");
+  mkdirSync(dirA, { recursive: true });
+  mkdirSync(dirB, { recursive: true });
+
+  const storePath = join(dir, "store.sqlite");
+  const base = makeFakeEmbedder(32);
+  // Seed one committed chunk so the racing passes start from MAX(rowid) = 1.
+  await new RagEngine({ storePath, embedder: base }).ensureIndex([
+    { name: "seed", path: docs, topK: 3 },
+  ]);
+
+  const allLogs = [];
+  for (let round = 1; round <= 2; round++) {
+    const fA = join(dirA, `fA-${round}.md`);
+    const fB = join(dirB, `fB-${round}.md`);
+    writeFileSync(
+      fA,
+      `## Alpha ${round}\nAlpha fruit is sweet and crisp and round.\n\n## Beta ${round}\nBeta berries are small and tart.\n`,
+    );
+    writeFileSync(fB, `## Gamma ${round}\nGamma melons are large and juicy.\n`);
+
+    // One SHARED barrier embedder: both racers must reach the file embed
+    // before either inserts — their MAX reads already happened, so both use
+    // the same next rowid and exactly one of them collides (different
+    // db_name, different source_path → no shared delete frees the rowid).
+    const barrier = makeBarrierEmbedder(32, 2, base);
+    const engineA = new RagEngine({
+      storePath,
+      embedder: barrier,
+      logger: (m) => allLogs.push(m),
+    });
+    const engineB = new RagEngine({
+      storePath,
+      embedder: barrier,
+      logger: (m) => allLogs.push(m),
+    });
+    const [countsA, countsB] = await Promise.all([
+      engineA.ensureIndex([{ name: "dA", path: dirA, topK: 3 }]),
+      engineB.ensureIndex([{ name: "dB", path: dirB, topK: 3 }]),
+    ]);
+    assert.ok(countsA.dA >= 2, `round ${round}: db A indexed: ${JSON.stringify(countsA)}`);
+    assert.ok(countsB.dB >= 1, `round ${round}: db B indexed: ${JSON.stringify(countsB)}`);
+  }
+
+  // The deterministic race produced at least one UNIQUE collision, recovered
+  // via the re-base retry (the H1 diagnostic line is emitted at the failure).
+  const uniqueLogs = allLogs.filter((m) =>
+    m.includes("UNIQUE constraint failed on chunks primary key"),
+  );
+  assert.ok(uniqueLogs.length >= 1, `at least one UNIQUE collision logged (got ${uniqueLogs.length})`);
+  assert.ok(
+    uniqueLogs.some((m) =>
+      m.includes("rowid=") && m.includes("max_rowid=") && m.includes("existing_chunk_id="),
+    ),
+    "H1 diagnostic fields present in the UNIQUE log",
+  );
+  assert.ok(
+    allLogs.some((m) => m.includes("rag: retrying") && m.includes("UNIQUE constraint failed")),
+    "re-base retry after the UNIQUE collision is logged",
+  );
+
+  // Final store consistency: nothing was lost and nothing double-indexed.
+  const finalRun = new RagEngine({ storePath, embedder: base });
+  const finalCounts = await finalRun.ensureIndex([
+    { name: "seed", path: docs, topK: 3 },
+    { name: "dA", path: dirA, topK: 3 },
+    { name: "dB", path: dirB, topK: 3 },
+  ]);
+  // seed 1 chunk + 2 rounds × (dbA 2 chunks + dbB 1 chunk) = 7.
+  assert.equal(
+    finalCounts.seed + finalCounts.dA + finalCounts.dB,
+    7,
+    `total chunk counts consistent: ${JSON.stringify(finalCounts)}`,
+  );
+  const sections = await finalRun.query("alpha beta gamma melon", [
+    { name: "seed", path: docs, topK: 3 },
+    { name: "dA", path: dirA, topK: 3 },
+    { name: "dB", path: dirB, topK: 3 },
+  ]);
+  assert.equal(sections.length, 3, "all three databases queryable after the collisions");
+  assert.ok(
+    sections.every((s) => s.results.length > 0),
+    "each database returns results",
+  );
+});

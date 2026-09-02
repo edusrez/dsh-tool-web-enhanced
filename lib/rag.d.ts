@@ -155,6 +155,16 @@ export declare class RagEngine {
     /** Embed a batch of texts and L2-normalize each resulting vector. */
     embed(texts: string[]): Promise<number[][]>;
     /**
+     * Read-only rowid inventory of the vec0 store, for the H1 diagnostic logged
+     * at an insert failure: the attempted rowid, the visible MAX(rowid), the
+     * shadow PK table (`chunks_rowids` — the table that owns the UNIQUE the
+     * inserts trip) and the `sqlite_sequence` high-water mark, plus a tombstone
+     * proxy (rowid inventory vs visible chunk rows). Metadata ONLY: NEVER
+     * chunk_text, vectors or any corpus content (fb-14/15 — the corpus holds
+     * live keys; the denylist applies to new chunking, not retroactively).
+     */
+    private vec0FailureState;
+    /**
      * Ingest/refresh every configured database, keyed on file mtime.
      *
      * Idempotent: unchanged files (same db, path, mtime) are skipped. Changed
