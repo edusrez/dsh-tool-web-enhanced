@@ -703,3 +703,111 @@ test("buildSections includes parallel and resolveSourcesParameter selects the pa
   const resolved = resolveSourcesParameter("native,parallel", sections);
   assert.deepEqual(resolved, { native: true, sections: new Set(["parallel"]) });
 });
+
+// ---------------------------------------------------------------------------
+// Presenter guard — the enhanced web_search records SINGULAR `query` args while
+// the api-proxy replays sessions through the REGISTERED presenters. The STOCK
+// presentSearchCall/presentSearchResult (plural `queries`) would throw
+// `TypeError: Cannot read properties of undefined (reading 'join')` on any
+// recorded enhanced call (the benign-but-noisy "api-proxy presenter" journald
+// spam, QD D-Q3). The tool's presenters now normalize singular `query` to the
+// plural array BEFORE delegating, so replay presents the SAME search card
+// without throwing. 0 real APIs — pure presenter functions.
+// ---------------------------------------------------------------------------
+
+/**
+ * A schema-equivalent RESOLVED enhanced config (the values the harness's
+ * Cordis config resolution would produce from the defaults): every section
+ * DISABLED so the enhanced web_search is registered without any seam/engine
+ * activity (0 real APIs — pure registration + presenter functions).
+ */
+function resolvedMinimalConfig() {
+  return {
+    search: true,
+    fetch: false,
+    searchMaxResults: 8,
+    fetchTimeoutMs: 30000,
+    searchTimeoutMs: 60000,
+    fetchMaxOutputChars: 200000,
+    sections: {
+      searxng: { enabled: false, url: "" },
+      parallel: { enabled: false, apiKey: "", apiKeyEnv: "", mode: "fast", maxResults: 10 },
+      rag: {
+        enabled: false,
+        storePath: "",
+        embeddings: {
+          provider: "auto",
+          apiKeyEnv: "EMBEDDING_API_KEY",
+          apiKey: "",
+          model: "BAAI/bge-m3",
+          baseURL: "https://api.deepinfra.com/v1/openai",
+          localModel: "Xenova/bge-small-en-v1.5",
+        },
+        excludePaths: [],
+        ignoreDotfiles: false,
+        denyContent: [],
+        databases: [],
+      },
+    },
+    parallelExtract: { enabled: false, apiKey: "", apiKeyEnv: "PARALLEL_API_KEY", extractMode: "full", timeoutMs: 60000 },
+  };
+}
+
+test("presenter guard: a recorded SINGULAR `query` call/result present without throwing and keeps the same search card title as the plural shape", async () => {
+  // The api-proxy presents the tool registered in the scope: the ENHANCED
+  // web_search (registered by this plugin) carries singular `query` in args.
+  const { apply } = await import("../lib/index.js");
+  const registered = [];
+  const fakeCtx = {
+    tools: {
+      register(def) { registered.push(def); return () => {}; },
+    },
+    web: {},
+    systemPrompt: { section: () => {} },
+    logger: { info: () => {}, warn: () => {} },
+  };
+  apply(fakeCtx, resolvedMinimalConfig());
+  const webSearch = registered.find((d) => d.name === "web_search");
+  assert.ok(webSearch !== undefined, "the enhanced web_search is registered in the composition");
+
+  // A call replayed from a session log carries the enhanced SINGULAR shape.
+  const singularArgs = { query: "OpenAI GPT-6 Astra launch", topic: "news", sources: "native,rag" };
+  const callView = webSearch.presentCall(singularArgs);
+  assert.ok(callView !== undefined, "presentCall returns a view for the singular query args (NO TypeError)");
+  assert.equal(callView.title, "OpenAI GPT-6 Astra launch", "the singular query drives the SAME card title the plural shape would");
+  assert.equal(callView.kind, "search", "the search card kind is preserved");
+
+  // The result path also normalizes (the stock presentSearchResult reads
+  // args.queries for its title) — replay of a recorded enhanced result must
+  // not throw either.
+  const resultView = webSearch.presentResult(singularArgs, {
+    content: [{ type: "text", text: "answer" }],
+    isError: false,
+    meta: {
+      sources: [{ url: "https://example.com", title: "Example" }],
+      truncated: false,
+    },
+  });
+  assert.ok(resultView !== undefined, "presentResult returns a view for the singular query args (NO TypeError)");
+  assert.equal(resultView.kind, "search", "the result card kind is preserved");
+  assert.ok(Array.isArray(resultView.sources) && resultView.sources.length === 1, "the projected sources survive normalization");
+});
+
+test("presenter guard: the plural `queries` shape can NEVER throw — the schema-guard soft-falls to `undefined` (generic card), exactly the api-proxy behavior we need on replay", async () => {
+  const { apply } = await import("../lib/index.js");
+  const registered = [];
+  const fakeCtx = {
+    tools: { register(def) { registered.push(def); return () => {}; } },
+    web: {},
+    systemPrompt: { section: () => {} },
+    logger: { info: () => {}, warn: () => {} },
+  };
+  apply(fakeCtx, resolvedMinimalConfig());
+  const webSearch = registered.find((d) => d.name === "web_search");
+  // The enhanced schema REQUIRES the singular `query` key — a plural-only args
+  // object fails the schema guard, so presentCall soft-falls to undefined
+  // (generic card). The CRITICAL property: it returns (or throws) WITHOUT a
+  // `TypeError: ... reading 'join'` — the api-proxy presenter noise is gone.
+  const callView = webSearch.presentCall({ queries: ["one", "two"] });
+  assert.ok(callView === undefined || callView.title === "one, two", "a plural queries call soft-falls to generic or presents as the stock comma-joined title — NEVER throws")
+});

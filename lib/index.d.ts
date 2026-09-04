@@ -21,6 +21,24 @@ export declare const inject: string[];
 export { buildSections, createParallelSection, createRagSection, createSearxngSection, DEFAULT_SEARXNG_URL, SEARXNG_SNIPPET_MAX_CHARS, TOPIC_CATEGORIES, formatSearxngOutput, mapParallelResults, mapParallelSource, mapSearxngResults, mapSearxngSource, PARALLEL_API_URL, PARALLEL_MODE_DEFAULT, PARALLEL_MAX_RESULTS, PARALLEL_SNIPPET_MAX_CHARS, deriveParallelSearchQueries, fetchParallel, pickParallelSnippet, resolveSourcesParameter, topicToCategory, truncateSnippet, buildParallelExtractBody, joinParallelExcerpts, extractParallelContent, findParallelExtractResult, registerParallelExtractProvider, ParallelExtractProvider, PARALLEL_EXTRACT_API_URL, PARALLEL_EXTRACT_MAX_URLS, PARALLEL_EXTRACT_MODE_DEFAULT, PARALLEL_EXTRACT_PROVIDER_ID, PARALLEL_EXTRACT_TIMEOUT_MS, } from "./modules.js";
 export type { ParallelExtractMode, ParallelExtractProviderConfig, ParallelExtractRequest, ParallelExtractResponse, ParallelExtractResultItem, ParallelMode, SectionBlock, SectionRunContext, SectionSource, SearchSection, } from "./modules.js";
 /**
+ * Portable declared types for the `databases` config member. The inferred
+ * input type of `z.array(z.object(…))` reaches `@deepseek-ai/cosmokit`'s
+ * `Dict` through schemastery's public `ObjectS` alias, which the emitted
+ * `.d.ts` cannot name (cosmokit is not a direct dependency → TS2742).
+ * Annotating the member with this explicit portable type keeps the
+ * declaration emit clean; runtime semantics are unchanged.
+ */
+type RagDatabaseInput = {
+    name?: string | null | undefined;
+    path?: string | null | undefined;
+    topK?: number | null | undefined;
+};
+type RagDatabaseSchema = z<RagDatabaseInput[], Schemastery.ObjectT<{
+    name: z<string, string>;
+    path: z<string, string>;
+    topK: z<number, number>;
+}>[]>;
+/**
  * Plugin configuration. Extends the stock `dsh-tool-web` keys (which keep
  * identical names and defaults) with a unified `sections` container replacing
  * the former flat top-level search/RAG keys (breaking change).
@@ -89,15 +107,7 @@ export declare const Config: z<Schemastery.ObjectS<{
              * assignments) always apply on top.
              */
             denyContent: z<string[], string[]>;
-            databases: z<({
-                name?: string | null | undefined;
-                path?: string | null | undefined;
-                topK?: number | null | undefined;
-            } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<{
-                name: z<string, string>;
-                path: z<string, string>;
-                topK: z<number, number>;
-            }>[]>;
+            databases: RagDatabaseSchema;
         }>, Schemastery.ObjectT<{
             enabled: z<boolean, boolean>;
             storePath: z<string, string>;
@@ -134,15 +144,7 @@ export declare const Config: z<Schemastery.ObjectS<{
              * assignments) always apply on top.
              */
             denyContent: z<string[], string[]>;
-            databases: z<({
-                name?: string | null | undefined;
-                path?: string | null | undefined;
-                topK?: number | null | undefined;
-            } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<{
-                name: z<string, string>;
-                path: z<string, string>;
-                topK: z<number, number>;
-            }>[]>;
+            databases: RagDatabaseSchema;
         }>>;
     }>, Schemastery.ObjectT<{
         searxng: z<Schemastery.ObjectS<{
@@ -201,15 +203,7 @@ export declare const Config: z<Schemastery.ObjectS<{
              * assignments) always apply on top.
              */
             denyContent: z<string[], string[]>;
-            databases: z<({
-                name?: string | null | undefined;
-                path?: string | null | undefined;
-                topK?: number | null | undefined;
-            } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<{
-                name: z<string, string>;
-                path: z<string, string>;
-                topK: z<number, number>;
-            }>[]>;
+            databases: RagDatabaseSchema;
         }>, Schemastery.ObjectT<{
             enabled: z<boolean, boolean>;
             storePath: z<string, string>;
@@ -246,15 +240,7 @@ export declare const Config: z<Schemastery.ObjectS<{
              * assignments) always apply on top.
              */
             denyContent: z<string[], string[]>;
-            databases: z<({
-                name?: string | null | undefined;
-                path?: string | null | undefined;
-                topK?: number | null | undefined;
-            } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<{
-                name: z<string, string>;
-                path: z<string, string>;
-                topK: z<number, number>;
-            }>[]>;
+            databases: RagDatabaseSchema;
         }>>;
     }>>;
     /**
@@ -340,15 +326,7 @@ export declare const Config: z<Schemastery.ObjectS<{
              * assignments) always apply on top.
              */
             denyContent: z<string[], string[]>;
-            databases: z<({
-                name?: string | null | undefined;
-                path?: string | null | undefined;
-                topK?: number | null | undefined;
-            } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<{
-                name: z<string, string>;
-                path: z<string, string>;
-                topK: z<number, number>;
-            }>[]>;
+            databases: RagDatabaseSchema;
         }>, Schemastery.ObjectT<{
             enabled: z<boolean, boolean>;
             storePath: z<string, string>;
@@ -385,15 +363,7 @@ export declare const Config: z<Schemastery.ObjectS<{
              * assignments) always apply on top.
              */
             denyContent: z<string[], string[]>;
-            databases: z<({
-                name?: string | null | undefined;
-                path?: string | null | undefined;
-                topK?: number | null | undefined;
-            } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<{
-                name: z<string, string>;
-                path: z<string, string>;
-                topK: z<number, number>;
-            }>[]>;
+            databases: RagDatabaseSchema;
         }>>;
     }>, Schemastery.ObjectT<{
         searxng: z<Schemastery.ObjectS<{
@@ -452,15 +422,7 @@ export declare const Config: z<Schemastery.ObjectS<{
              * assignments) always apply on top.
              */
             denyContent: z<string[], string[]>;
-            databases: z<({
-                name?: string | null | undefined;
-                path?: string | null | undefined;
-                topK?: number | null | undefined;
-            } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<{
-                name: z<string, string>;
-                path: z<string, string>;
-                topK: z<number, number>;
-            }>[]>;
+            databases: RagDatabaseSchema;
         }>, Schemastery.ObjectT<{
             enabled: z<boolean, boolean>;
             storePath: z<string, string>;
@@ -497,15 +459,7 @@ export declare const Config: z<Schemastery.ObjectS<{
              * assignments) always apply on top.
              */
             denyContent: z<string[], string[]>;
-            databases: z<({
-                name?: string | null | undefined;
-                path?: string | null | undefined;
-                topK?: number | null | undefined;
-            } & import("@deepseek-ai/cosmokit").Dict)[], Schemastery.ObjectT<{
-                name: z<string, string>;
-                path: z<string, string>;
-                topK: z<number, number>;
-            }>[]>;
+            databases: RagDatabaseSchema;
         }>>;
     }>>;
     /**

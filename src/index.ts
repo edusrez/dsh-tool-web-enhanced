@@ -122,6 +122,25 @@ export type {
 // ---------------------------------------------------------------------------
 
 /**
+ * Portable declared types for the `databases` config member. The inferred
+ * input type of `z.array(z.object(…))` reaches `@deepseek-ai/cosmokit`'s
+ * `Dict` through schemastery's public `ObjectS` alias, which the emitted
+ * `.d.ts` cannot name (cosmokit is not a direct dependency → TS2742).
+ * Annotating the member with this explicit portable type keeps the
+ * declaration emit clean; runtime semantics are unchanged.
+ */
+type RagDatabaseInput = {
+  name?: string | null | undefined;
+  path?: string | null | undefined;
+  topK?: number | null | undefined;
+};
+type RagDatabaseSchema = z<RagDatabaseInput[], Schemastery.ObjectT<{
+  name: z<string, string>;
+  path: z<string, string>;
+  topK: z<number, number>;
+}>[]>;
+
+/**
  * Plugin configuration. Extends the stock `dsh-tool-web` keys (which keep
  * identical names and defaults) with a unified `sections` container replacing
  * the former flat top-level search/RAG keys (breaking change).
@@ -178,7 +197,7 @@ export const Config = z.object({
         name: z.string(),
         path: z.string(),
         topK: z.number().default(5),
-      })).default([]),
+      })).default([]) as unknown as RagDatabaseSchema,
     }).default({} as any),
   }).default({} as any),
   /**
@@ -632,9 +651,32 @@ function applyEnhancedWebSearchTool(
 
       return value;
     },
-    presentCall: presentSearchCall,
-    presentResult: (args, result) => presentSearchResult(args, result),
+    presentCall: (args) => presentSearchCall(normalizeWebSearchArgs(args)),
+    presentResult: (args, result) => presentSearchResult(normalizeWebSearchArgs(args), result),
   }));
+}
+
+/**
+ * The enhanced `web_search` schema records a SINGULAR `query` (the upstream
+ * stock `web_search` uses a plural `queries` array). The api-proxy REPLAYS
+ * recorded tool/call + tool/result events through the REGISTERED presenters —
+ * with the enhanced singular args shape (`{query: "…"}`, no `queries` key) the
+ * STOCK `presentSearchCall`/`presentSearchResult` dereference `args.queries`
+ * directly and throw `TypeError: Cannot read properties of undefined (reading
+ * 'join')` (the benign-but-noisy "api-proxy presenter" journald spam). This
+ * normalizer maps the enhanced singular `query` into the plural array the stock
+ * presenters consume, so replay presents the SAME search card (delivery
+ * semantics unchanged) and never throws; a caller that already supplies
+ * `queries` passes through untouched.
+ */
+function normalizeWebSearchArgs(args: { query?: string; queries?: string[] }): Record<string, unknown> & { queries: string[] } {
+  const queries = Array.isArray(args.queries) && args.queries.length > 0
+    ? args.queries
+    : (() => {
+        const query = typeof args.query === "string" ? args.query.trim() : ""
+        return query === "" ? [] : [query]
+      })()
+  return { ...args, queries }
 }
 
 // ---------------------------------------------------------------------------
