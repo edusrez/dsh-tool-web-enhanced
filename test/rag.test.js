@@ -447,6 +447,45 @@ test("RagEngine excludePaths skips glob matches and self-cleans on re-index", as
   );
 });
 
+test("journals-corpus excludePaths: sessions/ + archive/ transcripts out, top-level memos in", async (t) => {
+  // Mirrors the VALLE 09-08 RAG-CORPUS profile exclusion
+  // (`sections.rag.excludePaths` in the deepartments-dev cordis.patch.yml):
+  // the globs are relative to the db root, so a journals-like root with
+  // top-level memos plus `sessions/` + `archive/` transcript subtrees must
+  // only index the memos.
+  const { dir, docs } = await makeFixtureDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(join(docs, "member-1.md"), "## Memo\nshared summary text visible to every member.\n");
+  const sessionsDir = join(docs, "sessions");
+  mkdirSync(sessionsDir, { recursive: true });
+  writeFileSync(join(sessionsDir, "host-session-abc.md"), "## Transcript\nraw session transcript with tool output.\n");
+  const archiveDir = join(docs, "archive");
+  mkdirSync(archiveDir, { recursive: true });
+  writeFileSync(join(archiveDir, "host-session-old.md"), "## Transcript\nold raw session transcript with tool output.\n");
+
+  const storePath = join(dir, "store.sqlite");
+  const databases = [{ name: "docs", path: docs, topK: 3 }];
+  const engine = new RagEngine({
+    storePath,
+    embedder: makeFakeEmbedder(32),
+    filters: { excludePaths: ["sessions/**", "archive/**"] },
+  });
+  const counts = await engine.ensureIndex(databases);
+  assert.equal(counts.docs, 1, "only the top-level memo is indexed (transcripts excluded by path)");
+
+  const forTranscript = await engine.query("raw session transcript tool output", databases);
+  assert.ok(
+    !(forTranscript.length > 0 && forTranscript[0].results.some((r) => /sessions\/|archive\//.test(r.path))),
+    "transcript subtrees not queryable",
+  );
+  const forMemo = await engine.query("shared summary text members", databases);
+  assert.ok(
+    forMemo.length > 0 && forMemo[0].results.some((r) => r.path.endsWith("member-1.md")),
+    "top-level memo remains queryable",
+  );
+});
+
 test("RagEngine ignoreDotfiles omits dotfiles only when enabled", async (t) => {
   const { dir, docs } = await makeFixtureDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
